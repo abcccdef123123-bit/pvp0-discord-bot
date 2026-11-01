@@ -573,7 +573,6 @@ async def collect_category_details(
                     "Skopiuj i wypełnij poniższy formularz (wpisz swoje odpowiedzi po myślniku `-`):\n\n"
                     f"{form_box}"
                 ),
-                content=form_box,
                 color=config.COLOR_RECRUIT,
                 min_len=5,
                 max_len=1500,
