@@ -7,20 +7,6 @@ from discord.ext import commands
 import config
 
 
-def build_verification_embed() -> discord.Embed:
-    embed = discord.Embed(
-        title="✅  [ Weryfikacja ] × [ PVP0 ]",
-        description=(
-            "```\n[ Dostęp do serwera ]\n```\n"
-            "Aby uzyskać dostęp do pełnego serwera gildii **PVP0**, kliknij przycisk poniżej.\n\n"
-            "```\nKlikając przycisk potwierdzasz, że zapoznałeś się z regulaminem serwera. ✅\n```"
-        ),
-        color=config.COLOR_VERIFY,
-    )
-    embed.set_footer(text=config.FOOTER_TEXT)
-    return embed
-
-
 class VerifyButton(discord.ui.Button):
     def __init__(self) -> None:
         super().__init__(
@@ -74,10 +60,22 @@ class VerifyButton(discord.ui.Button):
         )
 
 
-class VerificationView(discord.ui.View):
+class VerificationView(discord.ui.LayoutView):
     def __init__(self) -> None:
         super().__init__(timeout=None)
-        self.add_item(VerifyButton())
+        button = VerifyButton()
+        header_section = discord.ui.Section(
+            discord.ui.TextDisplay("### **✅ [ Weryfikacja ] × [ PVP0 ]**"),
+            accessory=button,
+        )
+        gallery = discord.ui.MediaGallery(discord.MediaGalleryItem("attachment://pvp0.gif"))
+        container = discord.ui.Container(
+            header_section,
+            gallery,
+            discord.ui.TextDisplay(f"-# {config.FOOTER_TEXT}"),
+            accent_colour=config.COLOR_VERIFY,
+        )
+        self.add_item(container)
 
 
 class Verification(commands.Cog):
@@ -97,9 +95,11 @@ class Verification(commands.Cog):
                 ephemeral=True,
             )
             return
-        await interaction.response.send_message(
-            embed=build_verification_embed(),
+        await interaction.response.defer()
+        file = discord.File(config.BANNER_PATH, filename="pvp0.gif")
+        await interaction.followup.send(
             view=VerificationView(),
+            file=file,
         )
 
     @panel_weryfikacja.error
@@ -109,6 +109,19 @@ class Verification(commands.Cog):
                 await interaction.followup.send("❌ Ta komenda jest dostępna tylko dla Administratorów.", ephemeral=True)
             else:
                 await interaction.response.send_message("❌ Ta komenda jest dostępna tylko dla Administratorów.", ephemeral=True)
+
+    @app_commands.command(
+        name="panel_weryfikacja",
+        description="Wyślij panel weryfikacji PVP0 na ten kanał.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def panel_weryfikacja_alias(self, interaction: discord.Interaction) -> None:
+        await self.panel_weryfikacja(interaction)
+
+    @panel_weryfikacja_alias.error
+    async def panel_weryfikacja_alias_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        await self.panel_weryfikacja_error(interaction, error)
 
 
 async def setup(bot: commands.Bot) -> None:
