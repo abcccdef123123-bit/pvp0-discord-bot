@@ -119,6 +119,20 @@ async def has_open_ticket(guild: discord.Guild, user_id: int) -> bool:
     if user_id in ACTIVE_TICKET_USERS:
         return True
 
+    # Sprawdź, czy w kategorii ticketów istnieje aktywny kanał tego użytkownika
+    if config.TICKET_CATEGORY_ID:
+        cat = guild.get_channel(config.TICKET_CATEGORY_ID)
+        if isinstance(cat, discord.CategoryChannel):
+            for ch in cat.text_channels:
+                if f"({user_id})" in (ch.topic or ""):
+                    return True
+
+    # Sprawdź wszystkie kanały w kategorii zawierającej słowo ticket
+    for ch in guild.text_channels:
+        if ch.category and "ticket" in ch.category.name.lower():
+            if f"({user_id})" in (ch.topic or ""):
+                return True
+
     # Sprawdź kanał logów pod kątem nierozpatrzonych zgłoszeń z aktywnymi przyciskami
     if config.LOG_CHANNEL_ID:
         log_channel = guild.get_channel(config.LOG_CHANNEL_ID)
@@ -687,45 +701,188 @@ async def collect_category_details(
                     return
                 fields["Uzasadnienie"] = info_ans
 
-        # Wysyłka do kanału administracji (#logi-ticket)
+        # ── KROK 5: Utworzenie prywatnego kanału ticketa na serwerze ──
         guild = bot.get_guild(guild_id)
         if guild is None:
             await dm_channel.send("Nie znaleziono serwera.")
             return
 
-        if not config.LOG_CHANNEL_ID:
-            await dm_channel.send("Kanał logów nie jest skonfigurowany. Skontaktuj się z administracją.")
+        member = guild.get_member(user.id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user.id)
+            except Exception:
+                member = None
+
+        if member is None:
+            await dm_channel.send("Nie jesteś już na serwerze Discord.")
             return
 
-        log_channel = guild.get_channel(config.LOG_CHANNEL_ID)
-        if not isinstance(log_channel, discord.TextChannel):
-            await dm_channel.send("Kanał logów nie został znaleziony. Skontaktuj się z administracją.")
+        # Pobierz lub utwórz kategorię ticketów
+        category: discord.CategoryChannel | None = None
+        if config.TICKET_CATEGORY_ID:
+            c = guild.get_channel(config.TICKET_CATEGORY_ID)
+            if isinstance(c, discord.CategoryChannel):
+                category = c
+
+        if category is None:
+            for c in guild.categories:
+                if "ticket" in c.name.lower() or "zgłoszen" in c.name.lower():
+                    category = c
+                    break
+
+        if category is None:
+            try:
+                category = await guild.create_category("tickety", reason="Automatyczne utworzenie kategorii na tickety")
+            except Exception:
+                category = None
+
+        # Uprawnienia (permission overwrites) — ukryty dla @everyone, widoczny dla kandydata, bota i liderów
+        overwrites: dict[discord.Role | discord.Member, discord.PermissionOverwrite] = {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=False,
+                send_messages=False,
+                read_message_history=False,
+            ),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                manage_channels=True,
+                manage_messages=True,
+                embed_links=True,
+                attach_files=True,
+            ),
+            member: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                embed_links=True,
+            ),
+        }
+
+        # Role zarządu / liderów
+        staff_roles: list[discord.Role] = []
+        staff_role_ids = {
+            rid for rid in (
+                config.STAFF_ROLE_ID,
+                getattr(config, "APPROVAL_ROLE_1_ID", None),
+                getattr(config, "APPROVAL_ROLE_2_ID", None),
+            ) if rid
+        }
+        for r in guild.roles:
+            if r.id in staff_role_ids or r.name.lower() in ("admin", "administrator", "zarząd", "zarzad", "rekruter", "lider"):
+                overwrites[r] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    attach_files=True,
+                    embed_links=True,
+                    manage_messages=True,
+                )
+                if r not in staff_roles:
+                    staff_roles.append(r)
+
+        # Nazwa kanału
+        prefix_map = {
+            "recruit": "rekrutacja",
+            "alliance": "sojusz",
+            "rank": "ranga",
+        }
+        prefix = prefix_map.get(category_key, "ticket")
+        clean_nick = re.sub(r"[^a-zA-Z0-9_-]", "", nick.lower().replace(" ", "-"))[:20] or "gracz"
+        channel_name = f"{prefix}-{clean_nick}"
+        topic = f"Ticket użytkownika: {user.name} ({user.id}) | Nick MC: {nick} | Kategoria: {category_key}"
+
+        ticket_channel: discord.TextChannel | None = None
+        try:
+            ticket_channel = await guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                overwrites=overwrites,
+                topic=topic,
+                reason=f"Nowy ticket {meta['label']} dla {user.name} ({nick})",
+            )
+        except Exception as exc:
+            logger.error("Błąd podczas tworzenia kanału ticketa: %s", exc)
+
+        target_channel = ticket_channel
+        if target_channel is None and config.LOG_CHANNEL_ID:
+            fallback = guild.get_channel(config.LOG_CHANNEL_ID)
+            if isinstance(fallback, discord.TextChannel):
+                target_channel = fallback
+
+        if not isinstance(target_channel, discord.TextChannel):
+            await dm_channel.send("Wystąpił błąd podczas tworzenia kanału ticketa. Skontaktuj się z administracją.")
             return
 
-        # Embed zgłoszenia dla administracji na kanale #logi-ticket
-        approval_embed = discord.Embed(
-            title=f"📋 Nowe zgłoszenie — {meta['label']}",
+        # 1. Wiadomość powitalna z pingami
+        staff_mentions = " ".join(r.mention for r in staff_roles[:3]) if staff_roles else "Zarząd"
+        welcome_text = (
+            f"👋 Witaj {member.mention}! Za chwilę dołączy do Ciebie administracja ({staff_mentions}).\n"
+            "Poniżej znajduje się Twoje wypełnione zgłoszenie:"
+        )
+
+        # 2. Główny estetyczny embed zgłoszenia
+        title_map = {
+            "recruit": f"⚔️ Zgłoszenie Rekrutacyjne — {nick}",
+            "alliance": f"🤝 Propozycja Sojuszu — {nick}",
+            "rank": f"🎖️ Wniosek o Nadanie Rangi — {nick}",
+        }
+        panel_title = title_map.get(category_key, f"📋 Nowy Ticket — {meta['label']}")
+
+        ticket_embed = discord.Embed(
+            title=panel_title,
             color=meta["color"],
             timestamp=datetime.now(timezone.utc),
         )
-        approval_embed.add_field(name="Discord", value=f"{user.mention}\n`{user}`", inline=True)
-        approval_embed.add_field(name="Nick MC", value=f"`{nick}`", inline=True)
-        approval_embed.add_field(name="Kategoria", value=f"{meta['emoji']} {meta['label']}", inline=True)
+        if guild.icon:
+            ticket_embed.set_author(name="Gildia PVP0 • System Ticketów", icon_url=guild.icon.url)
+        else:
+            ticket_embed.set_author(name="Gildia PVP0 • System Ticketów")
+
+        ticket_embed.description = (
+            f"Kandydat **{member.display_name}** ({member.mention}) zakończył wypełnianie pytań.\n"
+            "Możecie tutaj swobodnie rozmawiać, dopytać o szczegóły lub ustalić termin sprawdzianu PvP na serwerze."
+        )
+
+        ticket_embed.add_field(name="👤 Kandydat Discord", value=f"{member.mention}\n`{user.name}` (`{user.id}`)", inline=True)
+        ticket_embed.add_field(name="🎮 Nick Minecraft", value=f"**`{nick}`**", inline=True)
+        ticket_embed.add_field(name="📂 Kategoria", value=f"{meta['emoji']} **{meta['label']}**", inline=True)
 
         for name, value in fields.items():
-            safe_val = value if len(value) <= 1024 else value[:1020] + "..."
-            approval_embed.add_field(name=name, value=safe_val, inline=False)
+            if name == "Formularz rekrutacyjny":
+                ticket_embed.add_field(
+                    name="📝 Kwestionariusz rekrutacyjny",
+                    value=f"```text\n{value[:1000]}\n```" if "\n" in value else f"**{value[:1024]}**",
+                    inline=False,
+                )
+            else:
+                ticket_embed.add_field(name=f"📌 {name}", value=f"**{value[:1024]}**", inline=False)
 
-        approval_embed.set_thumbnail(url=user.display_avatar.url)
-        approval_embed.set_footer(text=config.FOOTER_TEXT)
+        ticket_embed.add_field(
+            name="⚖️ Panel Decyzyjny Liderów",
+            value=(
+                "🛡️ *Gdy Zarząd podejmie decyzję, wystarczy kliknąć jeden z poniższych przycisków:*\n"
+                "• **Zaakceptuj** — nadaje rolę, aktualizuje nick na serwerze i powiadamia gracza.\n"
+                "• **Odrzuć** — odrzuca zgłoszenie i wysyła powiadomienie na PV.\n"
+                "• **Zamknij ticket** — usuwa ten prywatny kanał."
+            ),
+            inline=False,
+        )
 
-        # Przyciski Akceptuj / Odrzuć
+        ticket_embed.set_thumbnail(url=user.display_avatar.url)
+        ticket_embed.set_footer(text=f"{config.FOOTER_TEXT} • ID: {user.id}")
+
+        # 3. Przyciski Akceptuj / Odrzuć / Zamknij
         approve_id = f"pvp0:approve:{user.id}:{category_key}"
         reject_id = f"pvp0:reject:{user.id}:{category_key}"
+        close_id = f"pvp0:close_ticket:{user.id}"
 
         view = discord.ui.View(timeout=None)
         view.add_item(discord.ui.Button(
-            label="Akceptuj",
+            label="Zaakceptuj",
             emoji="✅",
             style=discord.ButtonStyle.success,
             custom_id=approve_id,
@@ -736,38 +893,72 @@ async def collect_category_details(
             style=discord.ButtonStyle.danger,
             custom_id=reject_id,
         ))
+        view.add_item(discord.ui.Button(
+            label="Zamknij ticket",
+            emoji="🔒",
+            style=discord.ButtonStyle.secondary,
+            custom_id=close_id,
+        ))
 
-        await log_channel.send(embed=approval_embed, view=view)
+        await target_channel.send(content=welcome_text if ticket_channel else None, embed=ticket_embed, view=view)
 
-        # Potwierdzenie wysłania dla gracza w DM
-        confirm_embed = discord.Embed(
-            title="📩 Zgłoszenie wysłane",
-            description=(
+        # 4. Potwierdzenie dla gracza w DM
+        if ticket_channel:
+            dm_desc = (
+                f"Twój formularz **{meta['label']}** został pomyślnie przesłany do administracji.\n\n"
+                f"👉 **Przejdź do swojego prywatnego kanału na serwerze:**\n"
+                f"### {ticket_channel.mention}\n\n"
+                "Możesz tam pisać z Liderami i Zarządem gildii PVP0. Czekamy na Ciebie!"
+            )
+        else:
+            dm_desc = (
                 f"Twoje zgłoszenie **{meta['label']}** zostało pomyślnie przesłane do administracji.\n\n"
-                f"Nick: **{nick}**\n"
-                f"Kategoria: **{meta['label']}**\n\n"
+                f"Nick: **{nick}**\n\n"
                 "Poczekaj na decyzję — dostaniesz powiadomienie tutaj na PV."
-            ),
+            )
+
+        confirm_embed = discord.Embed(
+            title="🎫 Twój ticket został utworzony!",
+            description=dm_desc,
             color=config.COLOR_SUCCESS,
         )
         confirm_embed.set_footer(text=config.FOOTER_TEXT)
         await dm_channel.send(embed=confirm_embed)
+
+        # 5. Kopia powiadomienia w kanale logów
+        if ticket_channel and config.LOG_CHANNEL_ID:
+            log_ch = guild.get_channel(config.LOG_CHANNEL_ID)
+            if isinstance(log_ch, discord.TextChannel) and log_ch.id != ticket_channel.id:
+                log_embed = discord.Embed(
+                    title=f"📩 Nowy ticket: #{ticket_channel.name}",
+                    description=(
+                        f"Gracz {member.mention} (`{nick}`) otworzył ticket: {ticket_channel.mention}\n"
+                        f"Kategoria: **{meta['emoji']} {meta['label']}**"
+                    ),
+                    color=meta["color"],
+                    timestamp=datetime.now(timezone.utc),
+                )
+                log_embed.set_footer(text=config.FOOTER_TEXT)
+                try:
+                    await log_ch.send(embed=log_embed)
+                except Exception:
+                    pass
+
         success = True
     finally:
         ACTIVE_TICKET_USERS.discard(user.id)
 
 
 # ══════════════════════════════════════════════════════════════════
-#  OBSŁUGA PRZYCISKÓW AKCEPTUJ / ODRZUĆ (persistent via listener)
+#  OBSŁUGA PRZYCISKÓW AKCEPTUJ / ODRZUĆ / ZAMKNIJ (persistent via listener)
 # ══════════════════════════════════════════════════════════════════
 
 PROCESSED_APPROVAL_MESSAGES: set[int] = set()
 
 async def _handle_approval(interaction: discord.Interaction, approved: bool) -> None:
-    """Obsługuje kliknięcie Akceptuj lub Odrzuć w #logi-ticket."""
+    """Obsługuje kliknięcie Akceptuj lub Odrzuć w kanale ticketa."""
 
     custom_id = interaction.data.get("custom_id", "")  # type: ignore[union-attr]
-    # Format: pvp0:approve:{user_id}:{category_key}
     parts = custom_id.split(":")
     if len(parts) < 4:
         return
@@ -776,7 +967,6 @@ async def _handle_approval(interaction: discord.Interaction, approved: bool) -> 
     category_key = parts[3]
     msg_id = interaction.message.id if interaction.message else 0
 
-    # Zabezpieczenie przed podwójnym kliknięciem i podwójnym wysłaniem DM
     if msg_id and msg_id in PROCESSED_APPROVAL_MESSAGES:
         return
 
@@ -807,7 +997,7 @@ async def _handle_approval(interaction: discord.Interaction, approved: bool) -> 
                 )
             return
 
-        # Szybkie potwierdzenie interakcji (defer), aby zapobiec wygaśnięciu (10062 Unknown interaction)
+        # Szybkie potwierdzenie interakcji (defer)
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer()
@@ -820,12 +1010,13 @@ async def _handle_approval(interaction: discord.Interaction, approved: bool) -> 
         guild_name: str | None = None
         if interaction.message and interaction.message.embeds:
             for f in interaction.message.embeds[0].fields:
-                if f.name == "Nick MC":
-                    nick = f.value.replace("`", "").strip()
-                elif f.name == "Wnioskowana ranga":
+                fname = f.name.lower()
+                if "nick" in fname:
+                    nick = f.value.replace("`", "").replace("*", "").strip()
+                elif "wnioskowana ranga" in fname or "ranga" in fname:
                     requested_rank = f.value.lower()
-                elif f.name in ("Gildia", "Nazwa gildii"):
-                    guild_name = f.value.replace("`", "").strip()
+                elif "gildia" in fname or "nazwa gildii" in fname:
+                    guild_name = f.value.replace("`", "").replace("*", "").strip()
 
         # Pobierz gracza
         member = guild.get_member(user_id)
@@ -902,29 +1093,56 @@ async def _handle_approval(interaction: discord.Interaction, approved: bool) -> 
                         logger.warning("Błąd podczas edycji nicku gracza %s: %s", member.id, e)
                         nick_issue = f"Błąd uprawnień Discord: {e}"
 
-            # Zaktualizuj embed w kanale logów
+            # Zaktualizuj embed w kanale ticketa
             original_embed = interaction.message.embeds[0] if interaction.message and interaction.message.embeds else None
             status_embed = discord.Embed(
-                title=f"✅ Zaakceptowano — {meta.get('label', category_key)}",
+                title=f"✅ Zgłoszenie Zaakceptowane — {meta.get('label', category_key)}",
                 color=config.COLOR_SUCCESS,
                 timestamp=datetime.now(timezone.utc),
             )
             if original_embed:
                 for field in original_embed.fields:
-                    status_embed.add_field(name=field.name, value=field.value, inline=field.inline)
-            status_embed.add_field(name="Decyzja", value=f"✅ Zaakceptowano przez {admin.mention}", inline=False)
+                    if field.name not in ("⚖️ Panel Decyzyjny Liderów", "Decyzja", "✅ Decyzja"):
+                        status_embed.add_field(name=field.name, value=field.value, inline=field.inline)
+            status_embed.add_field(name="✅ Decyzja", value=f"Zaakceptowano przez {admin.mention}", inline=False)
             if role_given and target_role:
-                status_embed.add_field(name="Rola", value=f"Nadano {target_role.mention}", inline=False)
+                status_embed.add_field(name="🎖️ Rola", value=f"Nadano {target_role.mention}", inline=False)
             if nick_changed and new_nickname:
-                status_embed.add_field(name="Nowy pseudonim", value=f"`{new_nickname}`", inline=False)
+                status_embed.add_field(name="🏷️ Nowy pseudonim", value=f"`{new_nickname}`", inline=False)
             elif nick_issue and new_nickname:
-                status_embed.add_field(name="Pseudonim (niezmieniony)", value=f"`{new_nickname}`\n*(⚠️ {nick_issue})*", inline=False)
+                status_embed.add_field(name="🏷️ Pseudonim (niezmieniony)", value=f"`{new_nickname}`\n*(⚠️ {nick_issue})*", inline=False)
             status_embed.set_footer(text=config.FOOTER_TEXT)
 
-            # Dezaktywuj przyciski (usuwając view)
+            # Widok z przyciskiem do usunięcia kanału ticketa
+            delete_view = discord.ui.View(timeout=None)
+            delete_view.add_item(discord.ui.Button(
+                label="Usuń ten ticket",
+                emoji="🗑️",
+                style=discord.ButtonStyle.danger,
+                custom_id=f"pvp0:delete_channel:{user_id}",
+            ))
+
             if interaction.message:
                 try:
-                    await interaction.message.edit(embed=status_embed, view=None)
+                    await interaction.message.edit(embed=status_embed, view=delete_view)
+                except discord.HTTPException:
+                    pass
+
+            # Dodatkowa wiadomość z gratulacjami w kanale ticketa
+            if isinstance(interaction.channel, discord.TextChannel):
+                congrats_embed = discord.Embed(
+                    title="🎉 Gratulacje! Zgłoszenie zaakceptowane",
+                    description=(
+                        f"Kandydat {member.mention if member else user_id} został **zaakceptowany** przez {admin.mention}!\n\n"
+                        f"• Nadana rola: **{target_role.name if target_role else 'Przyznana'}**\n"
+                        f"• Nowy pseudonim: **`{new_nickname or (member.display_name if member else 'Bez zmian')}`**\n\n"
+                        "💬 *Gdy zakończycie rozmowę, kliknijcie przycisk **Usuń ten ticket** powyżej.*"
+                    ),
+                    color=config.COLOR_SUCCESS,
+                )
+                congrats_embed.set_footer(text=config.FOOTER_TEXT)
+                try:
+                    await interaction.channel.send(embed=congrats_embed)
                 except discord.HTTPException:
                     pass
 
@@ -981,23 +1199,57 @@ async def _handle_approval(interaction: discord.Interaction, approved: bool) -> 
                 except discord.Forbidden:
                     pass
 
+            # Log do kanału logów (jeśli skonfigurowany i inny niż kanał ticketa)
+            if config.LOG_CHANNEL_ID:
+                log_ch = guild.get_channel(config.LOG_CHANNEL_ID)
+                if isinstance(log_ch, discord.TextChannel) and log_ch.id != interaction.channel_id:
+                    try:
+                        await log_ch.send(embed=status_embed)
+                    except Exception:
+                        pass
+
         else:
             # ── ODRZUCENIE ────────────────────────────────────────
             original_embed = interaction.message.embeds[0] if interaction.message and interaction.message.embeds else None
             status_embed = discord.Embed(
-                title=f"❌ Odrzucono — {meta.get('label', category_key)}",
+                title=f"❌ Zgłoszenie Odrzucone — {meta.get('label', category_key)}",
                 color=config.COLOR_CLOSE,
                 timestamp=datetime.now(timezone.utc),
             )
             if original_embed:
                 for field in original_embed.fields:
-                    status_embed.add_field(name=field.name, value=field.value, inline=field.inline)
-            status_embed.add_field(name="Decyzja", value=f"❌ Odrzucono przez {admin.mention}", inline=False)
+                    if field.name not in ("⚖️ Panel Decyzyjny Liderów", "Decyzja", "❌ Decyzja"):
+                        status_embed.add_field(name=field.name, value=field.value, inline=field.inline)
+            status_embed.add_field(name="❌ Decyzja", value=f"Odrzucono przez {admin.mention}", inline=False)
             status_embed.set_footer(text=config.FOOTER_TEXT)
+
+            delete_view = discord.ui.View(timeout=None)
+            delete_view.add_item(discord.ui.Button(
+                label="Usuń ten ticket",
+                emoji="🗑️",
+                style=discord.ButtonStyle.danger,
+                custom_id=f"pvp0:delete_channel:{user_id}",
+            ))
 
             if interaction.message:
                 try:
-                    await interaction.message.edit(embed=status_embed, view=None)
+                    await interaction.message.edit(embed=status_embed, view=delete_view)
+                except discord.HTTPException:
+                    pass
+
+            # Informacja na kanale ticketa
+            if isinstance(interaction.channel, discord.TextChannel):
+                reject_ch_embed = discord.Embed(
+                    title="❌ Decyzja: Zgłoszenie odrzucone",
+                    description=(
+                        f"Zgłoszenie kandydata {member.mention if member else user_id} zostało **odrzucone** przez {admin.mention}.\n\n"
+                        "💬 *Gdy zakończycie rozmowę, możecie usunąć ten kanał przyciskiem **Usuń ten ticket** powyżej.*"
+                    ),
+                    color=config.COLOR_CLOSE,
+                )
+                reject_ch_embed.set_footer(text=config.FOOTER_TEXT)
+                try:
+                    await interaction.channel.send(embed=reject_ch_embed)
                 except discord.HTTPException:
                     pass
 
@@ -1025,8 +1277,65 @@ async def _handle_approval(interaction: discord.Interaction, approved: bool) -> 
                 except discord.Forbidden:
                     pass
 
+            # Log do kanału logów
+            if config.LOG_CHANNEL_ID:
+                log_ch = guild.get_channel(config.LOG_CHANNEL_ID)
+                if isinstance(log_ch, discord.TextChannel) and log_ch.id != interaction.channel_id:
+                    try:
+                        await log_ch.send(embed=status_embed)
+                    except Exception:
+                        pass
+
     finally:
         ACTIVE_TICKET_USERS.discard(user_id)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  OBSŁUGA ZAMYKANIA / USUWANIA KANAŁU TICKETA
+# ══════════════════════════════════════════════════════════════════
+
+async def _handle_channel_deletion(interaction: discord.Interaction) -> None:
+    """Zamyka i usuwa prywatny kanał ticketa po 5-sekundowym odliczeniu."""
+    guild = interaction.guild
+    channel = interaction.channel
+    if not guild or not isinstance(channel, discord.TextChannel):
+        return
+
+    custom_id = interaction.data.get("custom_id", "")  # type: ignore[union-attr]
+    parts = custom_id.split(":")
+    user_id = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 0
+
+    admin = interaction.user
+    is_staff = isinstance(admin, discord.Member) and _can_manage_tickets(admin, guild)
+    is_author = (admin.id == user_id)
+
+    if not (is_staff or is_author):
+        await interaction.response.send_message(
+            "❌ Tylko zarząd lub twórca ticketa mogą go zamknąć.",
+            ephemeral=True,
+        )
+        return
+
+    ACTIVE_TICKET_USERS.discard(user_id)
+
+    # Wyślij informację o usuwaniu kanału
+    close_embed = discord.Embed(
+        title="🔒 Zamykanie ticketa",
+        description="Ten kanał zostanie trwale usunięty za **5 sekund**...\nDziękujemy za kontakt z gildią **PVP0**!",
+        color=config.COLOR_CLOSE,
+    )
+    close_embed.set_footer(text=config.FOOTER_TEXT)
+
+    try:
+        await interaction.response.send_message(embed=close_embed)
+    except discord.HTTPException:
+        pass
+
+    await asyncio.sleep(5)
+    try:
+        await channel.delete(reason=f"Zamknięcie ticketa przez {admin.display_name}")
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        logger.error("Nie udało się usunąć kanału ticketa %s: %s", channel.name, exc)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1039,7 +1348,7 @@ class Tickets(commands.Cog):
 
     @commands.Cog.listener("on_interaction")
     async def handle_approval_buttons(self, interaction: discord.Interaction) -> None:
-        """Przechwytuje kliknięcia przycisków Akceptuj/Odrzuć (persistent)."""
+        """Przechwytuje kliknięcia przycisków Akceptuj/Odrzuć/Zamknij (persistent)."""
         if interaction.type != discord.InteractionType.component:
             return
         custom_id = interaction.data.get("custom_id", "")  # type: ignore[union-attr]
@@ -1047,6 +1356,8 @@ class Tickets(commands.Cog):
             await _handle_approval(interaction, approved=True)
         elif custom_id.startswith("pvp0:reject:"):
             await _handle_approval(interaction, approved=False)
+        elif custom_id.startswith("pvp0:close_ticket:") or custom_id.startswith("pvp0:delete_channel:"):
+            await _handle_channel_deletion(interaction)
 
     @app_commands.command(
         name="panel",
