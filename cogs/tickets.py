@@ -677,15 +677,20 @@ async def collect_category_details(
                     bot,
                     dm_channel,
                     user.id,
-                    title="🤝 Ranga Sojusz · Szczegóły",
-                    description="Podaj nazwę gildii sojuszniczej, z której jesteś:",
+                    title="🤝 Ranga Sojusz · TAG Gildii",
+                    description=(
+                        "Podaj **TAG (skrót/nazwę)** swojej gildii sojuszniczej (np. `ABC`, `SOJUSZ`):\n\n"
+                        "*Zostanie on pobrany i ustawiony w Twoim pseudonimie na serwerze jako `[TAG] TwójNick`.*"
+                    ),
                     color=config.COLOR_ALLIANCE,
                     min_len=2,
-                    max_len=100,
+                    max_len=20,
                 )
                 if not info_ans:
                     return
-                fields["Gildia"] = info_ans
+                clean_tag = info_ans.strip("[]() ").strip().upper()
+                fields["TAG Gildii"] = clean_tag
+                fields["Gildia"] = clean_tag
             else:
                 guild_obj = bot.get_guild(guild_id)
                 member_obj = guild_obj.get_member(user.id) if guild_obj else None
@@ -880,19 +885,25 @@ async def collect_category_details(
             )
             candidate_label = "👤 Kandydat Discord"
         elif category_key == "alliance":
+            tag_preview = fields.get("Nazwa gildii") or "SOJUSZ"
+            tag_clean = tag_preview.strip("[]() ").strip().upper()
             ticket_embed.description = (
-                f"Przedstawiciel **{member.display_name}** ({member.mention}) przesłał propozycję sojuszu.\n"
+                f"Przedstawiciel **{member.display_name}** ({member.mention}) przesłał propozycję sojuszu dla gildii **`{tag_clean}`**.\n"
+                f"🏷️ Po zaakceptowaniu bot ustawi jego pseudonim na: **`[{tag_clean}] {nick}`**.\n"
                 "Możecie tutaj swobodnie rozmawiać i ustalić warunki sojuszu między gildiami."
             )
             candidate_label = "👤 Reprezentant Discord"
         elif category_key == "rank":
             req_rank = fields.get("Wnioskowana ranga", "").lower()
             if "sojusz" in req_rank:
+                tag_preview = fields.get("TAG Gildii") or fields.get("Gildia") or "SOJUSZ"
+                tag_clean = tag_preview.strip("[]() ").strip().upper()
                 ticket_embed.description = (
-                    f"Gracz **{member.display_name}** ({member.mention}) złożył wniosek o nadanie rangi **Sojusz**.\n"
+                    f"Gracz **{member.display_name}** ({member.mention}) złożył wniosek o nadanie rangi **Sojusz** (TAG: **`[{tag_clean}]`**).\n"
+                    f"🏷️ Po zaakceptowaniu bot ustawi jego pseudonim na: **`[{tag_clean}] {nick}`**.\n"
                     "Możecie tutaj swobodnie rozmawiać i zweryfikować przynależność do sojuszu."
                 )
-                candidate_label = "👤 Reprezentant Discord"
+                candidate_label = "🤝 Sojusznik Discord"
             elif is_already_clan_member:
                 ticket_embed.description = (
                     f"Klanowicz **{member.display_name}** ({member.mention}) posiada już rangę **Członek** i złożył wniosek o **aktualizację nicku**.\n"
@@ -1075,7 +1086,7 @@ async def _handle_approval(interaction: discord.Interaction, approved: bool) -> 
                     nick = f.value.replace("`", "").replace("*", "").strip()
                 elif "wnioskowana ranga" in fname or "ranga" in fname:
                     requested_rank = f.value.lower()
-                elif "gildia" in fname or "nazwa gildii" in fname:
+                elif "tag" in fname or "gildia" in fname or "nazwa gildii" in fname:
                     guild_name = f.value.replace("`", "").replace("*", "").strip()
 
         # Pobierz gracza
@@ -1091,7 +1102,7 @@ async def _handle_approval(interaction: discord.Interaction, approved: bool) -> 
             role_given = False
             target_role: discord.Role | None = None
 
-            if category_key == "recruit" or (category_key == "rank" and requested_rank and "członek" in requested_rank):
+            if category_key == "recruit" or (category_key == "rank" and requested_rank and ("członek" in requested_rank or "czlonek" in requested_rank)):
                 target_role = _get_clan_role(guild)
             elif category_key == "alliance":
                 target_role = await _get_or_create_alliance_leader_role(guild)
@@ -1115,27 +1126,33 @@ async def _handle_approval(interaction: discord.Interaction, approved: bool) -> 
             nick_changed = False
             nick_issue: str | None = None
             new_nickname: str | None = None
+            tag_clean: str | None = None
 
             if category_key == "recruit":
                 new_nickname = f"[PVP0] {nick}"
             elif category_key == "rank":
                 if requested_rank and "sojusz" in requested_rank:
                     tag = guild_name or "SOJUSZ"
-                    tag_clean = tag.strip("[] ").strip()
+                    tag_clean = tag.strip("[]() ").strip().upper()
                     new_nickname = f"[{tag_clean}] {nick}"
-                elif requested_rank and "członek" in requested_rank:
+                elif requested_rank and ("członek" in requested_rank or "czlonek" in requested_rank):
                     new_nickname = f"[PVP0] {nick}"
                 elif guild_name:
-                    tag_clean = guild_name.strip("[] ").strip()
+                    tag_clean = guild_name.strip("[]() ").strip().upper()
                     new_nickname = f"[{tag_clean}] {nick}"
             elif category_key == "alliance":
                 tag = guild_name or "SOJUSZ"
-                tag_clean = tag.strip("[] ").strip()
+                tag_clean = tag.strip("[]() ").strip().upper()
                 new_nickname = f"[{tag_clean}] {nick}"
 
             if new_nickname and member:
                 if len(new_nickname) > 32:
-                    new_nickname = new_nickname[:32]
+                    max_tag = 32 - len(nick) - 3
+                    if max_tag >= 2 and tag_clean:
+                        tag_clean = tag_clean[:max_tag]
+                        new_nickname = f"[{tag_clean}] {nick}"
+                    else:
+                        new_nickname = new_nickname[:32]
                 if member.id == guild.owner_id:
                     nick_issue = "Discord blokuje botom zmianę pseudonimu Właściciela serwera"
                     logger.warning("Nie można zmienić nicku Właściciela serwera %s", member.id)
