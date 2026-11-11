@@ -84,8 +84,20 @@ async def _get_or_create_alliance_leader_role(guild: discord.Guild) -> discord.R
         return _get_alliance_role(guild)
 
 
-def _can_manage_tickets(admin: discord.Member, guild: discord.Guild) -> bool:
-    """Sprawdza, czy użytkownik ma uprawnienia do akceptacji/odrzucania podań (2 określone rangi)."""
+def _can_manage_tickets(admin: discord.Member | discord.User, guild: discord.Guild) -> bool:
+    """Sprawdza, czy użytkownik ma uprawnienia do akceptacji/odrzucania podań."""
+    if not isinstance(admin, discord.Member):
+        member = guild.get_member(admin.id)
+        if member is not None:
+            admin = member
+        else:
+            return False
+
+    # 1. Uprawnienia administratora na serwerze lub właściciel serwera
+    if admin.id == guild.owner_id or admin.guild_permissions.administrator:
+        return True
+
+    # 2. Sprawdź po ID skonfigurowanych ról
     allowed_ids = {
         rid for rid in (
             getattr(config, "APPROVAL_ROLE_1_ID", None),
@@ -93,20 +105,20 @@ def _can_manage_tickets(admin: discord.Member, guild: discord.Guild) -> bool:
             config.STAFF_ROLE_ID,
         ) if rid
     }
-
-    # 1. Sprawdź po ID skonfigurowanych ról
     for role in admin.roles:
         if role.id in allowed_ids:
             return True
 
-    # 2. Sprawdź po nazwach ról zarządu / administracji
+    # 3. Sprawdź po nazwach ról zarządu, liderów i rekrutacji
+    management_keywords = (
+        "admin", "administrator", "zarząd", "zarzad",
+        "rekruter", "lider", "liderówka", "liderowka",
+        "właściciel", "wlasciciel", "headadmin", "moderator", "mod", "staff", "opiekun"
+    )
     for role in admin.roles:
-        if role.name.lower() in ("admin", "administrator", "zarząd", "zarzad", "rekruter", "lider"):
+        r_name = role.name.lower().strip()
+        if any(kw in r_name for kw in management_keywords):
             return True
-
-    # 3. Uprawnienia administratora na serwerze
-    if admin.guild_permissions.administrator:
-        return True
 
     return False
 
@@ -1029,16 +1041,38 @@ PROCESSED_APPROVAL_MESSAGES: set[int] = set()
 async def _handle_approval(interaction: discord.Interaction, approved: bool) -> None:
     """Obsługuje kliknięcie Akceptuj lub Odrzuć w kanale ticketa."""
 
+    # 1. Błyskawiczny defer w pierwszych milisekundach (zapobiega "Aplikacja nie odpowiedziała na czas")
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+    except Exception:
+        pass
+
+    guild = interaction.guild
+    if guild is None:
+        try:
+            await interaction.followup.send("❌ Błąd: Nie znaleziono serwera.", ephemeral=True)
+        except Exception:
+            pass
+        return
+
     custom_id = interaction.data.get("custom_id", "")  # type: ignore[union-attr]
     parts = custom_id.split(":")
     if len(parts) < 4:
         return
 
-    user_id = int(parts[2])
+    try:
+        user_id = int(parts[2])
+    except ValueError:
+        return
     category_key = parts[3]
     msg_id = interaction.message.id if interaction.message else 0
 
     if msg_id and msg_id in PROCESSED_APPROVAL_MESSAGES:
+        try:
+            await interaction.followup.send("⚠️ Ta decyzja została już podjęta lub jest właśnie przetwarzana.", ephemeral=True)
+        except Exception:
+            pass
         return
 
     if interaction.message and interaction.message.embeds:
@@ -1046,34 +1080,40 @@ async def _handle_approval(interaction: discord.Interaction, approved: bool) -> 
         if current_title.startswith("✅") or current_title.startswith("❌"):
             if msg_id:
                 PROCESSED_APPROVAL_MESSAGES.add(msg_id)
+            try:
+                await interaction.followup.send("⚠️ Ta decyzja została już wcześniej zatwierdzona.", ephemeral=True)
+            except Exception:
+                pass
             return
+
+    # Pobierz pełny obiekt Member dla osoby decydującej
+    admin = interaction.user
+    if not isinstance(admin, discord.Member):
+        m = guild.get_member(interaction.user.id)
+        if m is None:
+            try:
+                m = await guild.fetch_member(interaction.user.id)
+            except Exception:
+                m = None
+        if m is not None:
+            admin = m
+
+    # Weryfikacja uprawnień administracji / wyznaczonych ról
+    if not isinstance(admin, discord.Member) or not _can_manage_tickets(admin, guild):
+        try:
+            await interaction.followup.send(
+                "❌ Tylko wyznaczone rangi (@Lider, @liderówka, @Rekruter, Administrator) mogą decydować o zgłoszeniach.",
+                ephemeral=True,
+            )
+        except Exception:
+            pass
+        return
 
     if msg_id:
         PROCESSED_APPROVAL_MESSAGES.add(msg_id)
 
     try:
         meta = CATEGORIES.get(category_key, {})
-        guild = interaction.guild
-        if guild is None:
-            return
-
-        admin = interaction.user
-
-        # Weryfikacja uprawnień administracji / wyznaczonych ról
-        if not _can_manage_tickets(admin, guild):
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "❌ Tylko wyznaczone rangi mogą decydować o zgłoszeniach.",
-                    ephemeral=True,
-                )
-            return
-
-        # Szybkie potwierdzenie interakcji (defer)
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.defer()
-        except discord.HTTPException:
-            pass
 
         # Wyciągnij Nick MC, Wnioskowaną rangę oraz Gildię z embeda
         nick = "Gracz"
@@ -1390,6 +1430,23 @@ async def _handle_approval(interaction: discord.Interaction, approved: bool) -> 
                     except Exception:
                         pass
 
+        # Potwierdzenie dla administratora
+        try:
+            await interaction.followup.send(
+                f"✅ Zgłoszenie zostało pomyślnie {'zaakceptowane' if approved else 'odrzucone'}!",
+                ephemeral=True,
+            )
+        except Exception:
+            pass
+
+    except Exception as exc:
+        logger.exception("Błąd podczas przetwarzania decyzji ticketa: %s", exc)
+        if msg_id:
+            PROCESSED_APPROVAL_MESSAGES.discard(msg_id)
+        try:
+            await interaction.followup.send(f"⚠️ Wystąpił błąd podczas przetwarzania decyzji: {exc}", ephemeral=True)
+        except Exception:
+            pass
     finally:
         ACTIVE_TICKET_USERS.discard(user_id)
 
@@ -1400,6 +1457,12 @@ async def _handle_approval(interaction: discord.Interaction, approved: bool) -> 
 
 async def _handle_channel_deletion(interaction: discord.Interaction) -> None:
     """Zamyka i usuwa prywatny kanał ticketa po 5-sekundowym odliczeniu."""
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+    except Exception:
+        pass
+
     guild = interaction.guild
     channel = interaction.channel
     if not guild or not isinstance(channel, discord.TextChannel):
@@ -1410,19 +1473,32 @@ async def _handle_channel_deletion(interaction: discord.Interaction) -> None:
     user_id = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 0
 
     admin = interaction.user
+    if not isinstance(admin, discord.Member):
+        m = guild.get_member(interaction.user.id)
+        if m is None:
+            try:
+                m = await guild.fetch_member(interaction.user.id)
+            except Exception:
+                m = None
+        if m is not None:
+            admin = m
+
     is_staff = isinstance(admin, discord.Member) and _can_manage_tickets(admin, guild)
-    is_author = (admin.id == user_id)
+    is_author = (interaction.user.id == user_id)
 
     if not (is_staff or is_author):
-        await interaction.response.send_message(
-            "❌ Tylko zarząd lub twórca ticketa mogą go zamknąć.",
-            ephemeral=True,
-        )
+        try:
+            await interaction.followup.send(
+                "❌ Tylko zarząd lub twórca ticketa mogą go zamknąć.",
+                ephemeral=True,
+            )
+        except Exception:
+            pass
         return
 
     ACTIVE_TICKET_USERS.discard(user_id)
 
-    # Wyślij informację o usuwaniu kanału
+    # Wyślij informację o usuwaniu kanału na czacie
     close_embed = discord.Embed(
         title="🔒 Zamykanie ticketa",
         description="Ten kanał zostanie trwale usunięty za **5 sekund**...\nDziękujemy za kontakt z gildią **PVP0**!",
@@ -1431,13 +1507,14 @@ async def _handle_channel_deletion(interaction: discord.Interaction) -> None:
     close_embed.set_footer(text=config.FOOTER_TEXT)
 
     try:
-        await interaction.response.send_message(embed=close_embed)
+        await channel.send(embed=close_embed)
     except discord.HTTPException:
         pass
 
     await asyncio.sleep(5)
     try:
-        await channel.delete(reason=f"Zamknięcie ticketa przez {admin.display_name}")
+        admin_name = admin.display_name if isinstance(admin, discord.Member) else interaction.user.name
+        await channel.delete(reason=f"Zamknięcie ticketa przez {admin_name}")
     except (discord.Forbidden, discord.HTTPException) as exc:
         logger.error("Nie udało się usunąć kanału ticketa %s: %s", channel.name, exc)
 
@@ -1456,12 +1533,15 @@ class Tickets(commands.Cog):
         if interaction.type != discord.InteractionType.component:
             return
         custom_id = interaction.data.get("custom_id", "")  # type: ignore[union-attr]
-        if custom_id.startswith("pvp0:approve:"):
-            await _handle_approval(interaction, approved=True)
-        elif custom_id.startswith("pvp0:reject:"):
-            await _handle_approval(interaction, approved=False)
-        elif custom_id.startswith("pvp0:close_ticket:") or custom_id.startswith("pvp0:delete_channel:"):
-            await _handle_channel_deletion(interaction)
+        try:
+            if custom_id.startswith("pvp0:approve:"):
+                await _handle_approval(interaction, approved=True)
+            elif custom_id.startswith("pvp0:reject:"):
+                await _handle_approval(interaction, approved=False)
+            elif custom_id.startswith("pvp0:close_ticket:") or custom_id.startswith("pvp0:delete_channel:"):
+                await _handle_channel_deletion(interaction)
+        except Exception as exc:
+            logger.exception("Błąd w handle_approval_buttons dla %s: %s", custom_id, exc)
 
     @app_commands.command(
         name="panel",
