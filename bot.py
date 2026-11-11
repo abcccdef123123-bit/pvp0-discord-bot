@@ -91,9 +91,15 @@ async def main() -> None:
         logging.error("Inna instancja bota jest już uruchomiona! Zamykanie tej instancji, aby zapobiec podwójnym wiadomościom.")
         return
     bot = Pvp0Bot()
-    async with bot:
-        await bot.start(config.TOKEN)
+    try:
+        async with bot:
+            await bot.start(config.TOKEN)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        logging.info("Bot został pomyślnie zatrzymany.")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
