@@ -29,13 +29,19 @@ def acquire_instance_lock(port: int = 48291) -> bool:
         return False
 
 
-intents = discord.Intents.default()
-intents.guilds = True
+def create_intents(with_members: bool = True) -> discord.Intents:
+    intents = discord.Intents.default()
+    intents.guilds = True
+    if with_members:
+        intents.members = True
+    return intents
 
 
 class Pvp0Bot(commands.Bot):
-    def __init__(self) -> None:
-        super().__init__(command_prefix="!", intents=intents, help_command=None)
+    def __init__(self, bot_intents: discord.Intents | None = None) -> None:
+        if bot_intents is None:
+            bot_intents = create_intents(with_members=True)
+        super().__init__(command_prefix="!", intents=bot_intents, help_command=None)
 
     async def setup_hook(self) -> None:
         await self.load_extension("cogs.verification")
@@ -95,14 +101,30 @@ class Pvp0Bot(commands.Bot):
         await self.change_presence(activity=None, status=discord.Status.online)
 
 
+async def run_bot(with_members: bool) -> None:
+    bot = Pvp0Bot(bot_intents=create_intents(with_members=with_members))
+    async with bot:
+        await bot.start(config.TOKEN)
+
+
 async def main() -> None:
     if not acquire_instance_lock():
         logging.error("Inna instancja bota jest już uruchomiona! Zamykanie tej instancji, aby zapobiec podwójnym wiadomościom.")
         return
-    bot = Pvp0Bot()
+
     try:
-        async with bot:
-            await bot.start(config.TOKEN)
+        await run_bot(with_members=True)
+    except discord.PrivilegedIntentsRequired:
+        logging.warning(
+            "Brak włączonego 'Server Members Intent' w Discord Developer Portal! "
+            "Uruchamianie bota w trybie awaryjnym (bez gateway intents). "
+            "Aby bot zawsze widział 100% członków każdej roli, włącz 'SERVER MEMBERS INTENT' "
+            "w Discord Developer Portal -> Bot -> Privileged Gateway Intents."
+        )
+        try:
+            await run_bot(with_members=False)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            logging.info("Bot został pomyślnie zatrzymany.")
     except (asyncio.CancelledError, KeyboardInterrupt):
         logging.info("Bot został pomyślnie zatrzymany.")
 

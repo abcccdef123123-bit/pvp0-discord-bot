@@ -515,6 +515,69 @@ async def get_clan_members(guild: discord.Guild) -> list[discord.Member]:
     return list(found.values())
 
 
+async def get_role_members(guild: discord.Guild, role: discord.Role) -> list[discord.Member]:
+    """Wyszukuje i zwraca wszystkich członków serwera posiadających daną rolę."""
+    found: dict[int, discord.Member] = {}
+
+    # 1. Sprawdź members z roli w pamięci podręcznej
+    for m in role.members:
+        if not m.bot:
+            found[m.id] = m
+
+    # 2. Jeśli serwer ma więcej członków niż w pamięci podręcznej, spróbuj chunk
+    if len(found) < guild.member_count:
+        try:
+            await guild.chunk()
+            for m in role.members:
+                if not m.bot:
+                    found[m.id] = m
+        except Exception:
+            pass
+
+    # 3. Sprawdź fetch_members
+    try:
+        async for m in guild.fetch_members(limit=None):
+            if not m.bot and role in m.roles:
+                found[m.id] = m
+    except Exception:
+        pass
+
+    # 4. Jeśli nadal mało członków (np. brak Server Members Intent na bramie), przeszukaj historię kanałów tekstowych
+    for ch in guild.text_channels:
+        if not ch.permissions_for(guild.me).read_message_history:
+            continue
+        try:
+            async for msg in ch.history(limit=50):
+                if msg.author.bot or msg.author.id in found:
+                    continue
+                m = guild.get_member(msg.author.id)
+                if m is None:
+                    try:
+                        m = await guild.fetch_member(msg.author.id)
+                    except Exception:
+                        continue
+                if m and not m.bot and role in m.roles:
+                    found[m.id] = m
+        except Exception:
+            continue
+
+    # 5. Sprawdź bazę znanych klanowiczów
+    known_ids = load_known_clan_ids()
+    for uid in known_ids:
+        if uid not in found:
+            m = guild.get_member(uid)
+            if m is None:
+                try:
+                    m = await guild.fetch_member(uid)
+                except Exception:
+                    m = None
+            if m and not m.bot and role in m.roles:
+                found[m.id] = m
+
+    return list(found.values())
+
+
+
 def _is_staff_or_admin(interaction: discord.Interaction) -> bool:
     if not isinstance(interaction.user, discord.Member):
         return False
@@ -1446,17 +1509,11 @@ class Treasury(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild
-        if len(guild.members) < guild.member_count:
-            try:
-                await guild.chunk()
-            except Exception:
-                pass
-
-        members = [m for m in rola.members if not m.bot]
+        members = await get_role_members(guild, rola)
 
         if not members:
             await interaction.followup.send(
-                f"⚠️ Rola {rola.mention} nie posiada żadnych członków (niebędących botami).",
+                f"⚠️ Rola {rola.mention} nie posiada żadnych członków (niebędących botami) lub bot nie ma do nich dostępu.",
                 ephemeral=True,
             )
             return
