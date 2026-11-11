@@ -687,12 +687,24 @@ async def collect_category_details(
                     return
                 fields["Gildia"] = info_ans
             else:
+                guild_obj = bot.get_guild(guild_id)
+                member_obj = guild_obj.get_member(user.id) if guild_obj else None
+                clan_r = _get_clan_role(guild_obj) if guild_obj else None
+                has_clan_role = member_obj and clan_r and clan_r in member_obj.roles
+
+                if has_clan_role:
+                    q_title = "⚔️ Ranga Członek / Zmiana nicku"
+                    q_desc = "Posiadasz już rangę Członek! Podaj powód zmiany nicku / aktualizacji danych:"
+                else:
+                    q_title = "⚔️ Ranga Członek · Szczegóły"
+                    q_desc = "Podaj powód / uzasadnienie nadania rangi Członek:"
+
                 info_ans = await ask_dm_question(
                     bot,
                     dm_channel,
                     user.id,
-                    title="⚔️ Ranga Członek · Szczegóły",
-                    description="Podaj powód / uzasadnienie nadania rangi Członek:",
+                    title=q_title,
+                    description=q_desc,
                     color=config.COLOR_RECRUIT,
                     min_len=2,
                     max_len=300,
@@ -831,10 +843,15 @@ async def collect_category_details(
         )
 
         # 2. Główny estetyczny embed zgłoszenia
+        clan_r = _get_clan_role(guild)
+        is_already_clan_member = bool(clan_r and member and clan_r in member.roles)
+
         if category_key == "rank":
             req_rank = fields.get("Wnioskowana ranga", "").lower()
             if "sojusz" in req_rank:
                 panel_title = f"🤝 Wniosek o Rangę Sojusz — {nick}"
+            elif is_already_clan_member and ("członek" in req_rank or "czlonek" in req_rank):
+                panel_title = f"🎖️ Zmiana Nicku / Członek — {nick}"
             elif "członek" in req_rank or "czlonek" in req_rank:
                 panel_title = f"🎖️ Wniosek o Rangę Członek — {nick}"
             else:
@@ -876,6 +893,12 @@ async def collect_category_details(
                     "Możecie tutaj swobodnie rozmawiać i zweryfikować przynależność do sojuszu."
                 )
                 candidate_label = "👤 Reprezentant Discord"
+            elif is_already_clan_member:
+                ticket_embed.description = (
+                    f"Klanowicz **{member.display_name}** ({member.mention}) posiada już rangę **Członek** i złożył wniosek o **aktualizację nicku**.\n"
+                    f"Po zaakceptowaniu bot ustawi jego nowy pseudonim na: **`[PVP0] {nick}`**."
+                )
+                candidate_label = "🛡️ Członek Klanu"
             else:
                 ticket_embed.description = (
                     f"Gracz **{member.display_name}** ({member.mention}) złożył wniosek o nadanie rangi **Członek**.\n"
@@ -1141,8 +1164,19 @@ async def _handle_approval(interaction: discord.Interaction, approved: bool) -> 
                 for field in original_embed.fields:
                     if field.name not in ("⚖️ Panel Decyzyjny Liderów", "Decyzja", "✅ Decyzja"):
                         status_embed.add_field(name=field.name, value=field.value, inline=field.inline)
+            clan_r = _get_clan_role(guild)
+            is_already_clan_member = bool(clan_r and member and clan_r in member.roles)
+            is_member_nick_update = bool(
+                is_already_clan_member
+                and category_key == "rank"
+                and requested_rank
+                and ("członek" in requested_rank or "czlonek" in requested_rank)
+            )
+
             status_embed.add_field(name="✅ Decyzja", value=f"Zaakceptowano przez {admin.mention}", inline=False)
-            if role_given and target_role:
+            if is_member_nick_update:
+                status_embed.add_field(name="🎖️ Rola", value=f"Posiada już rolę {target_role.mention if target_role else 'Członek'}", inline=False)
+            elif role_given and target_role:
                 status_embed.add_field(name="🎖️ Rola", value=f"Nadano {target_role.mention}", inline=False)
             if nick_changed and new_nickname:
                 status_embed.add_field(name="🏷️ Nowy pseudonim", value=f"`{new_nickname}`", inline=False)
@@ -1167,14 +1201,23 @@ async def _handle_approval(interaction: discord.Interaction, approved: bool) -> 
 
             # Dodatkowa wiadomość z gratulacjami w kanale ticketa
             if isinstance(interaction.channel, discord.TextChannel):
-                congrats_embed = discord.Embed(
-                    title="🎉 Gratulacje! Zgłoszenie zaakceptowane",
-                    description=(
+                if is_member_nick_update:
+                    congrats_desc = (
+                        f"Klanowicz {member.mention if member else user_id} uzyskał akceptację **aktualizacji nicku** od {admin.mention}!\n\n"
+                        f"• Status rangi: **Członek gildii PVP0**\n"
+                        f"• Nowy pseudonim: **`{new_nickname or (member.display_name if member else 'Bez zmian')}`**\n\n"
+                        "💬 *Gdy zakończycie rozmowę, kliknijcie przycisk **Usuń ten ticket** powyżej.*"
+                    )
+                else:
+                    congrats_desc = (
                         f"Kandydat {member.mention if member else user_id} został **zaakceptowany** przez {admin.mention}!\n\n"
                         f"• Nadana rola: **{target_role.name if target_role else 'Przyznana'}**\n"
                         f"• Nowy pseudonim: **`{new_nickname or (member.display_name if member else 'Bez zmian')}`**\n\n"
                         "💬 *Gdy zakończycie rozmowę, kliknijcie przycisk **Usuń ten ticket** powyżej.*"
-                    ),
+                    )
+                congrats_embed = discord.Embed(
+                    title="🎉 Gratulacje! Zgłoszenie zaakceptowane",
+                    description=congrats_desc,
                     color=config.COLOR_SUCCESS,
                 )
                 congrats_embed.set_footer(text=config.FOOTER_TEXT)
@@ -1211,14 +1254,21 @@ async def _handle_approval(interaction: discord.Interaction, approved: bool) -> 
                     )
                 elif category_key == "rank":
                     rank_name = "Sojusz" if (requested_rank and "sojusz" in requested_rank) else "Członek"
-                    dm_desc = (
-                        f"Twoja prośba o nadanie rangi **{rank_name}** została zaakceptowana!\n\n"
-                        f"Nick: **{nick}**\n\n"
-                    )
-                    if role_given and target_role:
-                        dm_desc += f"Nadano Ci rolę **{target_role.name}** na serwerze. 🎉"
+                    if is_member_nick_update:
+                        dm_desc = (
+                            f"Twój wniosek o aktualizację nicku w gildii **PVP0** został zaakceptowany przez administrację!\n\n"
+                            f"Nowy nick: **{nick}**\n\n"
+                            "Twój pseudonim na serwerze został pomyślnie zaktualizowany! 🎉"
+                        )
                     else:
-                        dm_desc += "Rola została pomyślnie zaakceptowana przez administrację. 🎉"
+                        dm_desc = (
+                            f"Twoja prośba o nadanie rangi **{rank_name}** została zaakceptowana!\n\n"
+                            f"Nick: **{nick}**\n\n"
+                        )
+                        if role_given and target_role:
+                            dm_desc += f"Nadano Ci rolę **{target_role.name}** na serwerze. 🎉"
+                        else:
+                            dm_desc += "Rola została pomyślnie zaakceptowana przez administrację. 🎉"
                 else:
                     dm_desc = f"Twoje zgłoszenie zostało zaakceptowane!\n\nNick: **{nick}**"
 
