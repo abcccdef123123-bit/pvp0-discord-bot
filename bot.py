@@ -92,12 +92,7 @@ class Pvp0Bot(commands.Bot):
             scopes=("bot", "applications.commands"),
         )
         logging.info("Zaproszenie bota: %s", invite)
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name="gildię PVP0",
-            )
-        )
+        await self.change_presence(activity=None, status=discord.Status.online)
 
 
 async def main() -> None:
