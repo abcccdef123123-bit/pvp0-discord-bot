@@ -153,6 +153,19 @@ def _get_clan_role(guild: discord.Guild) -> discord.Role | None:
     return None
 
 
+def _get_announcements_channel(guild: discord.Guild) -> discord.TextChannel | None:
+    ann_id = getattr(config, "ANNOUNCEMENTS_CHANNEL_ID", None)
+    if ann_id:
+        ch = guild.get_channel(ann_id)
+        if isinstance(ch, discord.TextChannel):
+            return ch
+    for ch in guild.text_channels:
+        name = ch.name.lower()
+        if "ogłoszen" in name or "ogloszen" in name or "announcement" in name:
+            return ch
+    return None
+
+
 async def get_clan_members(guild: discord.Guild) -> list[discord.Member]:
     """Wyszukuje i zwraca listę wszystkich członków z rolą klanowicza (bez botów)."""
     clan_role = _get_clan_role(guild)
@@ -683,6 +696,141 @@ class Treasury(commands.Cog):
     async def zbiorka_anuluj_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         if isinstance(error, app_commands.errors.MissingPermissions):
             msg = "❌ Ta komenda jest dostępna tylko dla Administratorów."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+
+    # ── /ogloszenie ──────────────────────────────────────────────────
+    @app_commands.command(
+        name="ogloszenie",
+        description="Wysyła oficjalne ogłoszenie na kanał #ogłoszenia oraz na PV do każdego członka klanu.",
+    )
+    @app_commands.describe(
+        tytul="Tytuł ogłoszenia (np. Nowy sojusz, Ważna informacja)",
+        tresc="Treść ogłoszenia do przekazania",
+        ping="Czy oznaczyć rolę klanu na kanale ogłoszeń? (Domyślnie: Nie)",
+        zdjecie_url="Opcjonalny link do obrazka/grafiki do embedu",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def ogloszenie(
+        self,
+        interaction: discord.Interaction,
+        tytul: str,
+        tresc: str,
+        ping: bool = False,
+        zdjecie_url: str | None = None,
+    ) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Ta komenda może być użyta tylko na serwerze.", ephemeral=True)
+            return
+
+        if not _is_staff_or_admin(interaction):
+            await interaction.response.send_message(
+                "❌ Ta komenda jest dostępna tylko dla Zarządu / Administratorów.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        channel = _get_announcements_channel(interaction.guild)
+        if not channel:
+            await interaction.followup.send(
+                "❌ Nie znaleziono kanału ogłoszeń!\n"
+                "Ustaw go za pomocą komendy `/ustaw kanal typ:📢 Kanał Ogłoszeń (#ogłoszenia) kanal:#twoj-kanal` "
+                "lub utwórz kanał tekstowy zawierający w nazwie `ogłoszenia`.",
+                ephemeral=True,
+            )
+            return
+
+        clan_role = _get_clan_role(interaction.guild)
+        members = await get_clan_members(interaction.guild)
+
+        # Tworzenie embedu ogłoszenia
+        embed = discord.Embed(
+            title=f"📢 {tytul}",
+            description=tresc,
+            color=config.COLOR_TICKET,
+            timestamp=datetime.now(timezone.utc),
+        )
+        if interaction.guild.icon:
+            embed.set_author(name=f"Gildia PVP0 • {interaction.guild.name}", icon_url=interaction.guild.icon.url)
+            embed.set_thumbnail(url=interaction.guild.icon.url)
+        else:
+            embed.set_author(name="Gildia PVP0")
+
+        if zdjecie_url and zdjecie_url.strip().startswith(("http://", "https://")):
+            embed.set_image(url=zdjecie_url.strip())
+
+        embed.set_footer(text=f"{config.FOOTER_TEXT_ZBIORKA} • Ogłosił: {interaction.user.display_name}")
+
+        # 1. Wysłanie na kanał ogłoszeń
+        content_ping = None
+        if ping:
+            if clan_role:
+                content_ping = clan_role.mention
+            else:
+                content_ping = "@everyone"
+
+        try:
+            channel_msg = await channel.send(content=content_ping, embed=embed)
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Wystąpił błąd podczas wysyłania ogłoszenia na kanał {channel.mention}: {e}",
+                ephemeral=True,
+            )
+            return
+
+        # 2. Wysłanie na PV (DM) do członków klanu
+        sent_count = 0
+        blocked_count = 0
+
+        # Wersja embedu dla DM z odnośnikiem do serwera
+        dm_embed = embed.copy()
+        dm_embed.add_field(
+            name="🔗 Wiadomość na serwerze",
+            value=f"[Kliknij tutaj, aby zobaczyć ogłoszenie na #{channel.name}]({channel_msg.jump_url})",
+            inline=False,
+        )
+
+        for member in members:
+            if member.bot:
+                continue
+            try:
+                await member.send(embed=dm_embed)
+                sent_count += 1
+            except (discord.Forbidden, discord.HTTPException):
+                blocked_count += 1
+            await asyncio.sleep(0.35)
+
+        # 3. Raport dla autora
+        report_embed = discord.Embed(
+            title="📢 Ogłoszenie wysłane pomyślnie!",
+            description=(
+                f"Twoje ogłoszenie zostało opublikowane na kanale {channel.mention} "
+                f"oraz rozesłane w wiadomościach prywatnych (PV) do członków klanu.\n\n"
+                f"🔗 **[Przejdź do ogłoszenia]({channel_msg.jump_url})**"
+            ),
+            color=config.COLOR_SUCCESS,
+            timestamp=datetime.now(timezone.utc),
+        )
+        report_embed.add_field(name="📢 Kanał", value=channel.mention, inline=True)
+        report_embed.add_field(name="✅ Wysłano na PV", value=f"**{sent_count}**", inline=True)
+        report_embed.add_field(name="🚫 Zablokowane DM", value=f"**{blocked_count}**", inline=True)
+        report_embed.add_field(
+            name="👥 Łącznie klanowiczów",
+            value=f"**{len(members)}** (z rolą {clan_role.mention if clan_role else 'Brak'})",
+            inline=False,
+        )
+        report_embed.set_footer(text=config.FOOTER_TEXT_ZBIORKA)
+
+        await interaction.followup.send(embed=report_embed, ephemeral=True)
+
+    @ogloszenie.error
+    async def ogloszenie_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        if isinstance(error, app_commands.errors.MissingPermissions):
+            msg = "❌ Ta komenda jest dostępna tylko dla Zarządu / Administratorów."
             if interaction.response.is_done():
                 await interaction.followup.send(msg, ephemeral=True)
             else:

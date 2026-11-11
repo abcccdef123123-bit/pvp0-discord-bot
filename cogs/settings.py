@@ -19,6 +19,7 @@ ROLE_OPTIONS = {
 CHANNEL_OPTIONS = {
     "kategoria_ticketow": ("TICKET_CATEGORY_ID", "📁 Kategoria Ticketów"),
     "logi": ("LOG_CHANNEL_ID", "📜 Kanał Logów Głównych"),
+    "ogloszenia": ("ANNOUNCEMENTS_CHANNEL_ID", "📢 Kanał Ogłoszeń (#ogłoszenia)"),
 }
 
 
@@ -96,6 +97,7 @@ class Settings(commands.Cog):
         typ=[
             app_commands.Choice(name="📁 Kategoria Ticketów", value="kategoria_ticketow"),
             app_commands.Choice(name="📜 Kanał Logów Głównych (#logi)", value="logi"),
+            app_commands.Choice(name="📢 Kanał Ogłoszeń (#ogłoszenia)", value="ogloszenia"),
         ]
     )
     async def ustaw_kanal(
@@ -193,6 +195,7 @@ class Settings(commands.Cog):
         typ=[
             app_commands.Choice(name="📁 Kategoria Ticketów", value="kategoria_ticketow"),
             app_commands.Choice(name="📜 Kanał Logów Głównych (#logi)", value="logi"),
+            app_commands.Choice(name="📢 Kanał Ogłoszeń (#ogłoszenia)", value="ogloszenia"),
         ]
     )
     @app_commands.default_permissions(administrator=True)

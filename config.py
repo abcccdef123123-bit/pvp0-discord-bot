@@ -33,6 +33,7 @@ ALLIANCE_LEADER_ROLE_ID = _int_env("ALLIANCE_LEADER_ROLE_ID", required=False)
 APPROVAL_ROLE_1_ID = _int_env("APPROVAL_ROLE_1_ID", required=False)
 APPROVAL_ROLE_2_ID = _int_env("APPROVAL_ROLE_2_ID", required=False)
 TREASURY_LOG_CHANNEL_ID = _int_env("TREASURY_LOG_CHANNEL_ID", required=False)
+ANNOUNCEMENTS_CHANNEL_ID = _int_env("ANNOUNCEMENTS_CHANNEL_ID", required=False)
 
 
 def load_custom_settings() -> dict[str, int]:
