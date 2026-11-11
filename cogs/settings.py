@@ -19,7 +19,6 @@ ROLE_OPTIONS = {
 CHANNEL_OPTIONS = {
     "kategoria_ticketow": ("TICKET_CATEGORY_ID", "📁 Kategoria Ticketów"),
     "logi": ("LOG_CHANNEL_ID", "📜 Kanał Logów Głównych"),
-    "logi_skarbiec": ("TREASURY_LOG_CHANNEL_ID", "💎 Kanał Logów Skarbca / Zbiórek"),
 }
 
 
@@ -97,7 +96,6 @@ class Settings(commands.Cog):
         typ=[
             app_commands.Choice(name="📁 Kategoria Ticketów", value="kategoria_ticketow"),
             app_commands.Choice(name="📜 Kanał Logów Głównych (#logi)", value="logi"),
-            app_commands.Choice(name="💎 Kanał Skarbca / Zbiórek", value="logi_skarbiec"),
         ]
     )
     async def ustaw_kanal(
@@ -195,7 +193,6 @@ class Settings(commands.Cog):
         typ=[
             app_commands.Choice(name="📁 Kategoria Ticketów", value="kategoria_ticketow"),
             app_commands.Choice(name="📜 Kanał Logów Głównych (#logi)", value="logi"),
-            app_commands.Choice(name="💎 Kanał Skarbca / Zbiórek", value="logi_skarbiec"),
         ]
     )
     @app_commands.default_permissions(administrator=True)
@@ -271,3 +268,4 @@ class Settings(commands.Cog):
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Settings(bot))
+
