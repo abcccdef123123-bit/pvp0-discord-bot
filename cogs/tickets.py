@@ -792,6 +792,12 @@ async def collect_category_details(
         }
         prefix = prefix_map.get(category_key, "ticket")
         clean_nick = re.sub(r"[^a-zA-Z0-9_-]", "", nick.lower().replace(" ", "-"))[:20] or "gracz"
+        if category_key == "rank":
+            req_rank = fields.get("Wnioskowana ranga", "").lower()
+            if "sojusz" in req_rank:
+                prefix = "ranga-sojusz"
+            elif "członek" in req_rank or "czlonek" in req_rank:
+                prefix = "ranga-czlonek"
         channel_name = f"{prefix}-{clean_nick}"
         topic = f"Ticket użytkownika: {user.name} ({user.id}) | Nick MC: {nick} | Kategoria: {category_key}"
 
@@ -825,12 +831,20 @@ async def collect_category_details(
         )
 
         # 2. Główny estetyczny embed zgłoszenia
-        title_map = {
-            "recruit": f"⚔️ Zgłoszenie Rekrutacyjne — {nick}",
-            "alliance": f"🤝 Propozycja Sojuszu — {nick}",
-            "rank": f"🎖️ Wniosek o Nadanie Rangi — {nick}",
-        }
-        panel_title = title_map.get(category_key, f"📋 Nowy Ticket — {meta['label']}")
+        if category_key == "rank":
+            req_rank = fields.get("Wnioskowana ranga", "").lower()
+            if "sojusz" in req_rank:
+                panel_title = f"🤝 Wniosek o Rangę Sojusz — {nick}"
+            elif "członek" in req_rank or "czlonek" in req_rank:
+                panel_title = f"🎖️ Wniosek o Rangę Członek — {nick}"
+            else:
+                panel_title = f"🎖️ Wniosek o Nadanie Rangi — {nick}"
+        else:
+            title_map = {
+                "recruit": f"⚔️ Zgłoszenie Rekrutacyjne — {nick}",
+                "alliance": f"🤝 Propozycja Sojuszu — {nick}",
+            }
+            panel_title = title_map.get(category_key, f"📋 Nowy Ticket — {meta['label']}")
 
         ticket_embed = discord.Embed(
             title=panel_title,
@@ -854,10 +868,24 @@ async def collect_category_details(
                 "Możecie tutaj swobodnie rozmawiać i ustalić warunki sojuszu między gildiami."
             )
             candidate_label = "👤 Reprezentant Discord"
+        elif category_key == "rank":
+            req_rank = fields.get("Wnioskowana ranga", "").lower()
+            if "sojusz" in req_rank:
+                ticket_embed.description = (
+                    f"Gracz **{member.display_name}** ({member.mention}) złożył wniosek o nadanie rangi **Sojusz**.\n"
+                    "Możecie tutaj swobodnie rozmawiać i zweryfikować przynależność do sojuszu."
+                )
+                candidate_label = "👤 Reprezentant Discord"
+            else:
+                ticket_embed.description = (
+                    f"Gracz **{member.display_name}** ({member.mention}) złożył wniosek o nadanie rangi **Członek**.\n"
+                    "Możecie tutaj swobodnie rozmawiać i zweryfikować zgłoszenie."
+                )
+                candidate_label = "👤 Kandydat Discord"
         else:
             ticket_embed.description = (
-                f"Gracz **{member.display_name}** ({member.mention}) przesłał wniosek o nadanie rangi.\n"
-                "Możecie tutaj zweryfikować szczegóły zgłoszenia."
+                f"Użytkownik **{member.display_name}** ({member.mention}) otworzył zgłoszenie.\n"
+                "Możecie tutaj swobodnie rozmawiać."
             )
             candidate_label = "👤 Gracz Discord"
 
