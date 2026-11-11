@@ -842,12 +842,26 @@ async def collect_category_details(
         else:
             ticket_embed.set_author(name="Gildia PVP0 • System Ticketów")
 
-        ticket_embed.description = (
-            f"Kandydat **{member.display_name}** ({member.mention}) zakończył wypełnianie pytań.\n"
-            "Możecie tutaj swobodnie rozmawiać, dopytać o szczegóły lub ustalić termin sprawdzianu PvP na serwerze."
-        )
+        if category_key == "recruit":
+            ticket_embed.description = (
+                f"Kandydat **{member.display_name}** ({member.mention}) zakończył wypełnianie pytań.\n"
+                "Możecie tutaj swobodnie rozmawiać, dopytać o szczegóły lub ustalić termin sprawdzianu PvP na serwerze."
+            )
+            candidate_label = "👤 Kandydat Discord"
+        elif category_key == "alliance":
+            ticket_embed.description = (
+                f"Przedstawiciel **{member.display_name}** ({member.mention}) przesłał propozycję sojuszu.\n"
+                "Możecie tutaj swobodnie rozmawiać i ustalić warunki sojuszu między gildiami."
+            )
+            candidate_label = "👤 Reprezentant Discord"
+        else:
+            ticket_embed.description = (
+                f"Gracz **{member.display_name}** ({member.mention}) przesłał wniosek o nadanie rangi.\n"
+                "Możecie tutaj zweryfikować szczegóły zgłoszenia."
+            )
+            candidate_label = "👤 Gracz Discord"
 
-        ticket_embed.add_field(name="👤 Kandydat Discord", value=f"{member.mention}\n`{user.name}` (`{user.id}`)", inline=True)
+        ticket_embed.add_field(name=candidate_label, value=f"{member.mention}\n`{user.name}` (`{user.id}`)", inline=True)
         ticket_embed.add_field(name="🎮 Nick Minecraft", value=f"**`{nick}`**", inline=True)
         ticket_embed.add_field(name="📂 Kategoria", value=f"{meta['emoji']} **{meta['label']}**", inline=True)
 
@@ -863,12 +877,7 @@ async def collect_category_details(
 
         ticket_embed.add_field(
             name="⚖️ Panel Decyzyjny Liderów",
-            value=(
-                "🛡️ *Gdy Zarząd podejmie decyzję, wystarczy kliknąć jeden z poniższych przycisków:*\n"
-                "• **Zaakceptuj** — nadaje rolę, aktualizuje nick na serwerze i powiadamia gracza.\n"
-                "• **Odrzuć** — odrzuca zgłoszenie i wysyła powiadomienie na PV.\n"
-                "• **Zamknij ticket** — usuwa ten prywatny kanał."
-            ),
+            value="• **Zaakceptuj**\n• **Odrzuć**\n• **Zamknij ticket**",
             inline=False,
         )
 
