@@ -22,7 +22,7 @@ TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
 if not TOKEN:
     raise RuntimeError("Ustaw DISCORD_TOKEN w pliku .env")
 
-GUILD_ID = _int_env("GUILD_ID")
+GUILD_ID = _int_env("GUILD_ID", required=False) or 1541920890328059994
 VERIFIED_ROLE_ID = _int_env("VERIFIED_ROLE_ID", required=False)
 STAFF_ROLE_ID = _int_env("STAFF_ROLE_ID", required=False)
 TICKET_CATEGORY_ID = _int_env("TICKET_CATEGORY_ID", required=False)

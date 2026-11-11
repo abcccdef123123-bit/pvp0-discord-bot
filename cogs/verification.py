@@ -19,10 +19,18 @@ class VerifyButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         assert interaction.guild and isinstance(interaction.user, discord.Member)
 
-        role = interaction.guild.get_role(config.VERIFIED_ROLE_ID)
+        role = None
+        if config.VERIFIED_ROLE_ID:
+            role = interaction.guild.get_role(config.VERIFIED_ROLE_ID)
+        if role is None:
+            for r in interaction.guild.roles:
+                if r.name.lower() in ("zweryfikowany", "weryfikacja", "gracz", "member", "członek", "czlonek"):
+                    role = r
+                    break
+
         if role is None:
             await interaction.response.send_message(
-                "Rola weryfikacji nie została znaleziona. Skontaktuj się z administracją.",
+                "Rola weryfikacji nie została znaleziona. Ustaw ją komendą `/ustaw rola` lub utwórz rolę 'Zweryfikowany'.",
                 ephemeral=True,
             )
             return
