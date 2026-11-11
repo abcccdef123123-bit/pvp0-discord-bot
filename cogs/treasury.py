@@ -1412,6 +1412,130 @@ class Treasury(commands.Cog):
     ) -> None:
         await self.ogloszenie_usun(interaction, wiadomosc_id)
 
+    # ── /komunikat (oraz alias /pw_rola) ─────────────────────────────
+    @app_commands.command(
+        name="komunikat",
+        description="Wysyła prywatną wiadomość (PV) do każdego użytkownika z wybraną rolą.",
+    )
+    @app_commands.describe(
+        rola="Wskaż rolę, której członkom chcesz wysłać wiadomość na PV",
+        tytul="Tytuł komunikatu",
+        tresc="Treść wiadomości do przekazania",
+        zdjecie_url="Opcjonalny link do obrazka/grafiki do wiadomości",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def komunikat(
+        self,
+        interaction: discord.Interaction,
+        rola: discord.Role,
+        tytul: str,
+        tresc: str,
+        zdjecie_url: str | None = None,
+    ) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Ta komenda może być użyta tylko na serwerze.", ephemeral=True)
+            return
+
+        if not _is_staff_or_admin(interaction):
+            await interaction.response.send_message(
+                "❌ Ta komenda jest dostępna tylko dla Zarządu / Administratorów.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        if len(guild.members) < guild.member_count:
+            try:
+                await guild.chunk()
+            except Exception:
+                pass
+
+        members = [m for m in rola.members if not m.bot]
+
+        if not members:
+            await interaction.followup.send(
+                f"⚠️ Rola {rola.mention} nie posiada żadnych członków (niebędących botami).",
+                ephemeral=True,
+            )
+            return
+
+        embed = discord.Embed(
+            title=f"📨 {tytul}",
+            description=tresc,
+            color=0x5865F2,
+            timestamp=datetime.now(timezone.utc),
+        )
+        if guild.icon:
+            embed.set_author(name=f"{guild.name} • Komunikat", icon_url=guild.icon.url)
+            embed.set_thumbnail(url=guild.icon.url)
+        else:
+            embed.set_author(name=f"{guild.name} • Komunikat")
+
+        embed.add_field(name="👥 Adresaci", value=f"Posiadacze roli: {rola.mention}", inline=False)
+
+        if zdjecie_url and zdjecie_url.strip().startswith(("http://", "https://")):
+            embed.set_image(url=zdjecie_url.strip())
+
+        embed.set_footer(text=f"{config.FOOTER_TEXT_ZBIORKA} • Od: {interaction.user.display_name}")
+
+        sent_count = 0
+        blocked_count = 0
+
+        for member in members:
+            try:
+                await member.send(embed=embed)
+                sent_count += 1
+            except (discord.Forbidden, discord.HTTPException):
+                blocked_count += 1
+            await asyncio.sleep(0.35)
+
+        report = discord.Embed(
+            title="📨 Komunikat został wysłany!",
+            description=f"Wysłano prywatną wiadomość do użytkowników posiadających rolę {rola.mention}.",
+            color=config.COLOR_SUCCESS,
+            timestamp=datetime.now(timezone.utc),
+        )
+        report.add_field(name="👥 Rola docelowa", value=rola.mention, inline=True)
+        report.add_field(name="✅ Wysłano pomyślnie", value=f"**{sent_count}**", inline=True)
+        report.add_field(name="🚫 Zablokowane DM", value=f"**{blocked_count}**", inline=True)
+        report.add_field(name="👥 Łącznie członków roli", value=f"**{len(members)}**", inline=False)
+        report.set_footer(text=config.FOOTER_TEXT_ZBIORKA)
+
+        await interaction.followup.send(embed=report, ephemeral=True)
+
+    @komunikat.error
+    async def komunikat_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        if isinstance(error, app_commands.errors.MissingPermissions):
+            msg = "❌ Ta komenda jest dostępna tylko dla Zarządu / Administratorów."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+
+    @app_commands.command(
+        name="pw_rola",
+        description="Szybkie wysłanie wiadomości na PV do każdego z wybraną rolą (alias dla /komunikat).",
+    )
+    @app_commands.describe(
+        rola="Wskaż rolę docelową",
+        tytul="Tytuł komunikatu",
+        tresc="Treść wiadomości",
+        zdjecie_url="Opcjonalny link do obrazka",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def pw_rola_alias(
+        self,
+        interaction: discord.Interaction,
+        rola: discord.Role,
+        tytul: str,
+        tresc: str,
+        zdjecie_url: str | None = None,
+    ) -> None:
+        await self.komunikat(interaction, rola, tytul, tresc, zdjecie_url)
+
+
 
 async def setup(bot: commands.Bot) -> None:
     bot.add_view(PollVoteView())
