@@ -43,6 +43,78 @@ def save_zbiorki(items: list[dict]) -> None:
         logging.error("Błąd zapisu zbiorki.json: %s", e)
 
 
+ANNOUNCEMENTS_FILE = os.path.join(DATA_DIR, "announcements.json")
+
+
+def load_announcements() -> list[dict]:
+    if not os.path.exists(ANNOUNCEMENTS_FILE):
+        return []
+    try:
+        with open(ANNOUNCEMENTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def save_announcements(items: list[dict]) -> None:
+    try:
+        with open(ANNOUNCEMENTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(items, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logging.error("Błąd zapisu announcements.json: %s", e)
+
+
+def record_announcement(msg_id: int, channel_id: int, guild_id: int, title: str, content: str, author_id: int) -> None:
+    items = load_announcements()
+    items.append({
+        "message_id": msg_id,
+        "channel_id": channel_id,
+        "guild_id": guild_id,
+        "title": title,
+        "content": content,
+        "author_id": author_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "deleted": False,
+    })
+    save_announcements(items)
+
+
+def mark_announcement_deleted(msg_id: int) -> None:
+    items = load_announcements()
+    for it in items:
+        if it.get("message_id") == msg_id:
+            it["deleted"] = True
+    save_announcements(items)
+
+
+def update_announcement_record(msg_id: int, new_title: str, new_content: str) -> None:
+    items = load_announcements()
+    for it in items:
+        if it.get("message_id") == msg_id:
+            it["title"] = new_title
+            it["content"] = new_content
+            it["updated_at"] = datetime.now(timezone.utc).isoformat()
+    save_announcements(items)
+
+
+def get_last_active_announcement(guild_id: int) -> dict | None:
+    items = load_announcements()
+    for it in reversed(items):
+        if it.get("guild_id") == guild_id and not it.get("deleted", False):
+            return it
+    return None
+
+
+def parse_message_id(raw: str | None) -> int | None:
+    if not raw:
+        return None
+    matches = re.findall(r"\d{17,21}", raw)
+    if matches:
+        return int(matches[-1])
+    return None
+
+
 def parse_meeting_datetime(data_str: str, time_str: str) -> datetime | None:
     """Parsuje polskie formaty daty i godziny zbiórki na obiekt datetime."""
     now = datetime.now().astimezone()
@@ -164,6 +236,45 @@ def _get_announcements_channel(guild: discord.Guild) -> discord.TextChannel | No
         if "ogłoszen" in name or "ogloszen" in name or "announcement" in name:
             return ch
     return None
+
+
+async def _find_target_announcement(
+    guild: discord.Guild,
+    channel: discord.TextChannel,
+    raw_id: str | None,
+    bot_user: discord.ClientUser,
+) -> tuple[discord.Message | None, str | None]:
+    """Wyszukuje wiadomość ogłoszenia po ID/linku lub znajduje ostatnie aktywne ogłoszenie bota."""
+    mid = parse_message_id(raw_id)
+    if mid:
+        try:
+            msg = await channel.fetch_message(mid)
+            return msg, None
+        except discord.NotFound:
+            return None, f"❌ Nie znaleziono wiadomości o ID `{mid}` na kanale {channel.mention}."
+        except discord.Forbidden:
+            return None, f"❌ Bot nie ma uprawnień do odczytania wiadomości na kanale {channel.mention}."
+        except discord.HTTPException as e:
+            return None, f"❌ Błąd pobierania wiadomości: {e}"
+
+    # Brak podanego ID - sprawdzamy ostatnie zarejestrowane ogłoszenie
+    last_record = get_last_active_announcement(guild.id)
+    if last_record:
+        try:
+            msg = await channel.fetch_message(last_record["message_id"])
+            return msg, None
+        except (discord.NotFound, discord.HTTPException):
+            mark_announcement_deleted(last_record["message_id"])
+
+    # Fallback: przeszukaj 30 ostatnich wiadomości na kanale za wiadomością bota z embedem
+    try:
+        async for m in channel.history(limit=30):
+            if m.author.id == bot_user.id and m.embeds:
+                return m, None
+    except Exception:
+        pass
+
+    return None, f"⚠️ Nie znaleziono żadnego ogłoszenia do edycji/usunięcia na kanale {channel.mention}. Podaj ID wiadomości w parametrze."
 
 
 async def get_clan_members(guild: discord.Guild) -> list[discord.Member]:
@@ -701,9 +812,18 @@ class Treasury(commands.Cog):
             else:
                 await interaction.response.send_message(msg, ephemeral=True)
 
-    # ── /ogloszenie ──────────────────────────────────────────────────
-    @app_commands.command(
+    # ══════════════════════════════════════════════════════════════════
+    #  MODUŁ OGŁOSZEŃ: /ogloszenie (wyslij, zmien, usun)
+    # ══════════════════════════════════════════════════════════════════
+    ogloszenie_group = app_commands.Group(
         name="ogloszenie",
+        description="Zarządzanie oficjalnymi ogłoszeniami gildii PVP0",
+        default_permissions=discord.Permissions(administrator=True),
+    )
+
+    # ── /ogloszenie wyslij ───────────────────────────────────────────
+    @ogloszenie_group.command(
+        name="wyslij",
         description="Wysyła oficjalne ogłoszenie na kanał #ogłoszenia oraz na PV do każdego członka klanu.",
     )
     @app_commands.describe(
@@ -712,8 +832,7 @@ class Treasury(commands.Cog):
         ping="Czy oznaczyć rolę klanu na kanale ogłoszeń? (Domyślnie: Nie)",
         zdjecie_url="Opcjonalny link do obrazka/grafiki do embedu",
     )
-    @app_commands.default_permissions(administrator=True)
-    async def ogloszenie(
+    async def ogloszenie_wyslij(
         self,
         interaction: discord.Interaction,
         tytul: str,
@@ -747,7 +866,6 @@ class Treasury(commands.Cog):
         clan_role = _get_clan_role(interaction.guild)
         members = await get_clan_members(interaction.guild)
 
-        # Tworzenie embedu ogłoszenia
         embed = discord.Embed(
             title=f"📢 {tytul}",
             description=tresc,
@@ -765,7 +883,6 @@ class Treasury(commands.Cog):
 
         embed.set_footer(text=f"{config.FOOTER_TEXT_ZBIORKA} • Ogłosił: {interaction.user.display_name}")
 
-        # 1. Wysłanie na kanał ogłoszeń
         content_ping = None
         if ping:
             if clan_role:
@@ -782,11 +899,12 @@ class Treasury(commands.Cog):
             )
             return
 
-        # 2. Wysłanie na PV (DM) do członków klanu
+        # Zapisz ogłoszenie w bazie danych
+        record_announcement(channel_msg.id, channel.id, interaction.guild.id, tytul, tresc, interaction.user.id)
+
         sent_count = 0
         blocked_count = 0
 
-        # Wersja embedu dla DM z odnośnikiem do serwera
         dm_embed = embed.copy()
         dm_embed.add_field(
             name="🔗 Wiadomość na serwerze",
@@ -804,7 +922,6 @@ class Treasury(commands.Cog):
                 blocked_count += 1
             await asyncio.sleep(0.35)
 
-        # 3. Raport dla autora
         report_embed = discord.Embed(
             title="📢 Ogłoszenie wysłane pomyślnie!",
             description=(
@@ -827,14 +944,256 @@ class Treasury(commands.Cog):
 
         await interaction.followup.send(embed=report_embed, ephemeral=True)
 
-    @ogloszenie.error
-    async def ogloszenie_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        if isinstance(error, app_commands.errors.MissingPermissions):
-            msg = "❌ Ta komenda jest dostępna tylko dla Zarządu / Administratorów."
-            if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(msg, ephemeral=True)
+    # ── /ogloszenie zmien ────────────────────────────────────────────
+    @ogloszenie_group.command(
+        name="zmien",
+        description="Edytuje treść lub tytuł istniejącego ogłoszenia na kanale #ogłoszenia.",
+    )
+    @app_commands.describe(
+        nowa_tresc="Nowa treść ogłoszenia",
+        nowy_tytul="Nowy tytuł ogłoszenia (opcjonalnie; jeśli puste, zachowuje dotychczasowy)",
+        wiadomosc_id="ID lub link wiadomości z ogłoszeniem (jeśli puste, edytuje ostatnie ogłoszenie)",
+        nowe_zdjecie_url="Nowy link do zdjęcia (wpisz 'brak' aby usunąć dotychczasowe zdjęcie)",
+        powiadom_pv="Czy wysłać zaktualizowaną treść na PV do członków klanu? (Domyślnie: Nie)",
+    )
+    async def ogloszenie_zmien(
+        self,
+        interaction: discord.Interaction,
+        nowa_tresc: str,
+        nowy_tytul: str | None = None,
+        wiadomosc_id: str | None = None,
+        nowe_zdjecie_url: str | None = None,
+        powiadom_pv: bool = False,
+    ) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Ta komenda może być użyta tylko na serwerze.", ephemeral=True)
+            return
+
+        if not _is_staff_or_admin(interaction):
+            await interaction.response.send_message(
+                "❌ Ta komenda jest dostępna tylko dla Zarządu / Administratorów.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        channel = _get_announcements_channel(interaction.guild)
+        if not channel:
+            await interaction.followup.send(
+                "❌ Nie znaleziono kanału ogłoszeń!\n"
+                "Ustaw go za pomocą komendy `/ustaw kanal typ:📢 Kanał Ogłoszeń (#ogłoszenia) kanal:#twoj-kanal`.",
+                ephemeral=True,
+            )
+            return
+
+        target_msg, err = await _find_target_announcement(interaction.guild, channel, wiadomosc_id, self.bot.user)
+        if err or not target_msg:
+            await interaction.followup.send(err or "❌ Nie znaleziono ogłoszenia do edycji.", ephemeral=True)
+            return
+
+        if not target_msg.embeds:
+            await interaction.followup.send("❌ Wybrana wiadomość nie posiada embedu ogłoszenia.", ephemeral=True)
+            return
+
+        old_embed = target_msg.embeds[0]
+        title = f"📢 {nowy_tytul.strip()}" if (nowy_tytul and nowy_tytul.strip()) else (old_embed.title or "📢 Ogłoszenie")
+
+        new_embed = discord.Embed(
+            title=title,
+            description=nowa_tresc,
+            color=old_embed.color or config.COLOR_TICKET,
+            timestamp=datetime.now(timezone.utc),
+        )
+        if old_embed.author:
+            new_embed.set_author(name=old_embed.author.name, icon_url=old_embed.author.icon_url)
+        elif interaction.guild.icon:
+            new_embed.set_author(name=f"Gildia PVP0 • {interaction.guild.name}", icon_url=interaction.guild.icon.url)
+        else:
+            new_embed.set_author(name="Gildia PVP0")
+
+        if old_embed.thumbnail:
+            new_embed.set_thumbnail(url=old_embed.thumbnail.url)
+        elif interaction.guild.icon:
+            new_embed.set_thumbnail(url=interaction.guild.icon.url)
+
+        # Obsługa obrazka
+        if nowe_zdjecie_url:
+            cleaned = nowe_zdjecie_url.strip().lower()
+            if cleaned in ("brak", "usun", "none", "remove", "nie"):
+                pass
+            elif nowe_zdjecie_url.strip().startswith(("http://", "https://")):
+                new_embed.set_image(url=nowe_zdjecie_url.strip())
+        elif old_embed.image and old_embed.image.url:
+            new_embed.set_image(url=old_embed.image.url)
+
+        new_embed.set_footer(text=f"{config.FOOTER_TEXT_ZBIORKA} • Zaktualizował: {interaction.user.display_name}")
+
+        try:
+            await target_msg.edit(embed=new_embed)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Błąd podczas edycji ogłoszenia: {e}", ephemeral=True)
+            return
+
+        update_announcement_record(target_msg.id, title, nowa_tresc)
+
+        sent_count = 0
+        blocked_count = 0
+        if powiadom_pv:
+            members = await get_clan_members(interaction.guild)
+            dm_embed = new_embed.copy()
+            dm_embed.title = f"🔄 ZAKTUALIZOWANO: {title}"
+            dm_embed.add_field(
+                name="🔗 Wiadomość na serwerze",
+                value=f"[Kliknij tutaj, aby zobaczyć zaktualizowane ogłoszenie]({target_msg.jump_url})",
+                inline=False,
+            )
+            for member in members:
+                if member.bot:
+                    continue
+                try:
+                    await member.send(embed=dm_embed)
+                    sent_count += 1
+                except (discord.Forbidden, discord.HTTPException):
+                    blocked_count += 1
+                await asyncio.sleep(0.35)
+
+        report = discord.Embed(
+            title="✏️ Ogłoszenie zostało zaktualizowane!",
+            description=(
+                f"Treść ogłoszenia na kanale {channel.mention} została pomyślnie zmieniona.\n\n"
+                f"🔗 **[Przejdź do ogłoszenia]({target_msg.jump_url})**"
+            ),
+            color=config.COLOR_SUCCESS,
+            timestamp=datetime.now(timezone.utc),
+        )
+        report.add_field(name="📢 Kanał", value=channel.mention, inline=True)
+        report.add_field(name="🆔 ID wiadomości", value=f"`{target_msg.id}`", inline=True)
+        if powiadom_pv:
+            report.add_field(name="📨 Powiadomienia PV", value=f"Wysłano: **{sent_count}**, Zablokowane: **{blocked_count}**", inline=False)
+        report.set_footer(text=config.FOOTER_TEXT_ZBIORKA)
+        await interaction.followup.send(embed=report, ephemeral=True)
+
+    # ── /ogloszenie usun ─────────────────────────────────────────────
+    @ogloszenie_group.command(
+        name="usun",
+        description="Usuwa ogłoszenie z kanału #ogłoszenia.",
+    )
+    @app_commands.describe(
+        wiadomosc_id="ID lub link wiadomości do usunięcia (jeśli puste, usuwa ostatnie ogłoszenie)",
+    )
+    async def ogloszenie_usun(
+        self,
+        interaction: discord.Interaction,
+        wiadomosc_id: str | None = None,
+    ) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Ta komenda może być użyta tylko na serwerze.", ephemeral=True)
+            return
+
+        if not _is_staff_or_admin(interaction):
+            await interaction.response.send_message(
+                "❌ Ta komenda jest dostępna tylko dla Zarządu / Administratorów.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        channel = _get_announcements_channel(interaction.guild)
+        if not channel:
+            await interaction.followup.send(
+                "❌ Nie znaleziono kanału ogłoszeń!\n"
+                "Ustaw go za pomocą komendy `/ustaw kanal typ:📢 Kanał Ogłoszeń (#ogłoszenia) kanal:#twoj-kanal`.",
+                ephemeral=True,
+            )
+            return
+
+        target_msg, err = await _find_target_announcement(interaction.guild, channel, wiadomosc_id, self.bot.user)
+        if err or not target_msg:
+            await interaction.followup.send(err or "❌ Nie znaleziono ogłoszenia do usunięcia.", ephemeral=True)
+            return
+
+        msg_id = target_msg.id
+        try:
+            await target_msg.delete()
+        except discord.NotFound:
+            pass
+        except Exception as e:
+            await interaction.followup.send(f"❌ Błąd podczas usuwania wiadomości: {e}", ephemeral=True)
+            return
+
+        mark_announcement_deleted(msg_id)
+
+        report = discord.Embed(
+            title="🗑️ Ogłoszenie zostało usunięte!",
+            description=f"Wiadomość ogłoszenia (ID: `{msg_id}`) została trwale usunięta z kanału {channel.mention}.",
+            color=config.COLOR_CLOSE,
+            timestamp=datetime.now(timezone.utc),
+        )
+        report.set_footer(text=config.FOOTER_TEXT_ZBIORKA)
+        await interaction.followup.send(embed=report, ephemeral=True)
+
+    # ── Szybkie aliasy bezpośrednie (top-level) ──────────────────────
+    @app_commands.command(
+        name="ogloszenie_wyslij",
+        description="Szybkie wysłanie nowego ogłoszenia na kanał #ogłoszenia oraz PV.",
+    )
+    @app_commands.describe(
+        tytul="Tytuł ogłoszenia",
+        tresc="Treść ogłoszenia",
+        ping="Czy oznaczyć rolę klanu na kanale ogłoszeń?",
+        zdjecie_url="Opcjonalny link do obrazka",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def ogloszenie_wyslij_alias(
+        self,
+        interaction: discord.Interaction,
+        tytul: str,
+        tresc: str,
+        ping: bool = False,
+        zdjecie_url: str | None = None,
+    ) -> None:
+        await self.ogloszenie_wyslij(interaction, tytul, tresc, ping, zdjecie_url)
+
+    @app_commands.command(
+        name="ogloszenie_zmien",
+        description="Szybka edycja istniejącego ogłoszenia na kanale #ogłoszenia.",
+    )
+    @app_commands.describe(
+        nowa_tresc="Nowa treść ogłoszenia",
+        nowy_tytul="Nowy tytuł ogłoszenia (opcjonalnie)",
+        wiadomosc_id="ID lub link wiadomości z ogłoszeniem (opcjonalnie, domyślnie ostatnie)",
+        nowe_zdjecie_url="Nowy link do zdjęcia (lub 'brak')",
+        powiadom_pv="Czy wysłać zaktualizowaną treść na PV?",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def ogloszenie_zmien_alias(
+        self,
+        interaction: discord.Interaction,
+        nowa_tresc: str,
+        nowy_tytul: str | None = None,
+        wiadomosc_id: str | None = None,
+        nowe_zdjecie_url: str | None = None,
+        powiadom_pv: bool = False,
+    ) -> None:
+        await self.ogloszenie_zmien(interaction, nowa_tresc, nowy_tytul, wiadomosc_id, nowe_zdjecie_url, powiadom_pv)
+
+    @app_commands.command(
+        name="ogloszenie_usun",
+        description="Szybkie usunięcie ogłoszenia z kanału #ogłoszenia.",
+    )
+    @app_commands.describe(
+        wiadomosc_id="ID lub link wiadomości do usunięcia (opcjonalnie, domyślnie ostatnie)",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def ogloszenie_usun_alias(
+        self,
+        interaction: discord.Interaction,
+        wiadomosc_id: str | None = None,
+    ) -> None:
+        await self.ogloszenie_usun(interaction, wiadomosc_id)
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Treasury(bot))
