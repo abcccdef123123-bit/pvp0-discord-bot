@@ -200,7 +200,22 @@ def make_poll_progress_bar(yes_count: int, no_count: int, total_length: int = 12
     return ("🟩" * green_blocks) + ("🟥" * red_blocks)
 
 
-def update_poll_embed(embed: discord.Embed, yes_count: int, no_count: int) -> discord.Embed:
+def format_voters_list(user_ids: list[int], max_display: int = 25) -> str:
+    if not user_ids:
+        return "*Brak*"
+    displayed = user_ids[:max_display]
+    mentions = [f"<@{uid}>" for uid in displayed]
+    res = ", ".join(mentions)
+    if len(user_ids) > max_display:
+        res += f" *...i {len(user_ids) - max_display} więcej*"
+    if len(res) > 1000:
+        res = res[:990] + "..."
+    return res
+
+
+def update_poll_embed(embed: discord.Embed, yes_votes: list[int], no_votes: list[int]) -> discord.Embed:
+    yes_count = len(yes_votes)
+    no_count = len(no_votes)
     total = yes_count + no_count
     yes_pct = int(round((yes_count / total) * 100)) if total > 0 else 0
     no_pct = 100 - yes_pct if total > 0 else 0
@@ -209,18 +224,29 @@ def update_poll_embed(embed: discord.Embed, yes_count: int, no_count: int) -> di
     poll_text = (
         f"✅ **TAK:** `{yes_count}` ({yes_pct}%)\n"
         f"❌ **NIE:** `{no_count}` ({no_pct}%)\n"
-        f"`[{bar}]` 👥 Łącznie oddanych głosów: **{total}**\n"
-        "*(Użyj przycisków poniżej, aby zagłosować lub zmienić swój głos)*"
+        f"`[{bar}]` 👥 Łącznie: **{total}**\n"
+        "*(Użyj przycisków poniżej, aby oddać lub zmienić swój głos)*"
     )
 
-    found = False
-    for i, field in enumerate(embed.fields):
-        if "Głosowanie" in field.name or "Ankieta" in field.name or "Wyniki" in field.name:
-            embed.set_field_at(i, name="🗳️ Głosowanie / Wyniki", value=poll_text, inline=False)
-            found = True
-            break
-    if not found:
-        embed.add_field(name="🗳️ Głosowanie / Wyniki", value=poll_text, inline=False)
+    yes_list_text = format_voters_list(yes_votes)
+    no_list_text = format_voters_list(no_votes)
+
+    # Usuń ewentualne stare pola ankiety, aby nie dublować
+    clean_fields = []
+    for field in embed.fields:
+        fname = field.name.lower()
+        if any(keyword in fname for keyword in ("głosowanie", "wyniki", "głosy na tak", "głosy na nie", "ankieta")):
+            continue
+        clean_fields.append(field)
+
+    embed.clear_fields()
+    for f in clean_fields:
+        embed.add_field(name=f.name, value=f.value, inline=f.inline)
+
+    embed.add_field(name="🗳️ Wyniki ankiety", value=poll_text, inline=False)
+    embed.add_field(name=f"✅ Głosy na TAK ({yes_count})", value=yes_list_text, inline=True)
+    embed.add_field(name=f"❌ Głosy na NIE ({no_count})", value=no_list_text, inline=True)
+
     return embed
 
 
@@ -237,8 +263,9 @@ async def handle_poll_vote(interaction: discord.Interaction, choice: str) -> Non
 
     if changed and msg.embeds:
         try:
-            new_embed = update_poll_embed(msg.embeds[0].copy(), yes_count, no_count)
-            new_view = PollVoteView(yes_count, no_count)
+            yes_votes, no_votes = get_poll_votes(msg.id)
+            new_embed = update_poll_embed(msg.embeds[0].copy(), yes_votes, no_votes)
+            new_view = PollVoteView(len(yes_votes), len(no_votes))
             await msg.edit(embed=new_embed, view=new_view)
         except Exception as e:
             logging.error("Błąd aktualizacji embedu ankiety: %s", e)
@@ -1048,7 +1075,7 @@ class Treasury(commands.Cog):
 
         view = None
         if ankieta:
-            embed = update_poll_embed(embed, 0, 0)
+            embed = update_poll_embed(embed, [], [])
             view = PollVoteView(0, 0)
 
         content_ping = None
@@ -1212,7 +1239,7 @@ class Treasury(commands.Cog):
         edit_view = None
         if is_poll:
             yes_votes, no_votes = get_poll_votes(target_msg.id)
-            new_embed = update_poll_embed(new_embed, len(yes_votes), len(no_votes))
+            new_embed = update_poll_embed(new_embed, yes_votes, no_votes)
             edit_view = PollVoteView(len(yes_votes), len(no_votes))
 
         try:
