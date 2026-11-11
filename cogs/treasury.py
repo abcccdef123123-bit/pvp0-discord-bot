@@ -65,7 +65,7 @@ def save_announcements(items: list[dict]) -> None:
         logging.error("Błąd zapisu announcements.json: %s", e)
 
 
-def record_announcement(msg_id: int, channel_id: int, guild_id: int, title: str, content: str, author_id: int) -> None:
+def record_announcement(msg_id: int, channel_id: int, guild_id: int, title: str, content: str, author_id: int, is_poll: bool = False) -> None:
     items = load_announcements()
     items.append({
         "message_id": msg_id,
@@ -74,6 +74,7 @@ def record_announcement(msg_id: int, channel_id: int, guild_id: int, title: str,
         "title": title,
         "content": content,
         "author_id": author_id,
+        "is_poll": is_poll,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "deleted": False,
     })
@@ -113,6 +114,165 @@ def parse_message_id(raw: str | None) -> int | None:
     if matches:
         return int(matches[-1])
     return None
+
+
+POLLS_FILE = os.path.join(DATA_DIR, "polls.json")
+
+
+def load_polls() -> dict[str, dict]:
+    if not os.path.exists(POLLS_FILE):
+        return {}
+    try:
+        with open(POLLS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_polls(data: dict) -> None:
+    try:
+        with open(POLLS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logging.error("Błąd zapisu polls.json: %s", e)
+
+
+def record_poll(msg_id: int) -> None:
+    data = load_polls()
+    data[str(msg_id)] = {"yes_votes": [], "no_votes": []}
+    save_polls(data)
+
+
+def is_poll_message(msg_id: int) -> bool:
+    data = load_polls()
+    return str(msg_id) in data
+
+
+def get_poll_votes(msg_id: int) -> tuple[list[int], list[int]]:
+    data = load_polls()
+    poll = data.get(str(msg_id), {"yes_votes": [], "no_votes": []})
+    return poll.get("yes_votes", []), poll.get("no_votes", [])
+
+
+def register_vote(msg_id: int, user_id: int, choice: str) -> tuple[bool, str, int, int]:
+    """Rejestruje głos i zwraca (czy_zmieniono_glos, komunikat, yes_count, no_count)."""
+    data = load_polls()
+    str_id = str(msg_id)
+    if str_id not in data:
+        data[str_id] = {"yes_votes": [], "no_votes": []}
+
+    yes_list = [int(x) for x in data[str_id].get("yes_votes", [])]
+    no_list = [int(x) for x in data[str_id].get("no_votes", [])]
+
+    if choice == "yes":
+        if user_id in yes_list:
+            return False, "ℹ️ Twój głos na **TAK** został już wcześniej zarejestrowany.", len(yes_list), len(no_list)
+        if user_id in no_list:
+            no_list.remove(user_id)
+            msg = "🔄 Zmieniono Twój głos na: **TAK** ✅!"
+        else:
+            msg = "✅ Oddano głos na: **TAK**!"
+        yes_list.append(user_id)
+    else:  # choice == "no"
+        if user_id in no_list:
+            return False, "ℹ️ Twój głos na **NIE** został już wcześniej zarejestrowany.", len(yes_list), len(no_list)
+        if user_id in yes_list:
+            yes_list.remove(user_id)
+            msg = "🔄 Zmieniono Twój głos na: **NIE** ❌!"
+        else:
+            msg = "❌ Oddano głos na: **NIE**!"
+        no_list.append(user_id)
+
+    data[str_id]["yes_votes"] = yes_list
+    data[str_id]["no_votes"] = no_list
+    save_polls(data)
+    return True, msg, len(yes_list), len(no_list)
+
+
+def make_poll_progress_bar(yes_count: int, no_count: int, total_length: int = 12) -> str:
+    total = yes_count + no_count
+    if total == 0:
+        return "░" * total_length
+    yes_pct = yes_count / total
+    green_blocks = int(round(yes_pct * total_length))
+    red_blocks = total_length - green_blocks
+    return ("🟩" * green_blocks) + ("🟥" * red_blocks)
+
+
+def update_poll_embed(embed: discord.Embed, yes_count: int, no_count: int) -> discord.Embed:
+    total = yes_count + no_count
+    yes_pct = int(round((yes_count / total) * 100)) if total > 0 else 0
+    no_pct = 100 - yes_pct if total > 0 else 0
+    bar = make_poll_progress_bar(yes_count, no_count)
+
+    poll_text = (
+        f"✅ **TAK:** `{yes_count}` ({yes_pct}%)\n"
+        f"❌ **NIE:** `{no_count}` ({no_pct}%)\n"
+        f"`[{bar}]` 👥 Łącznie oddanych głosów: **{total}**\n"
+        "*(Użyj przycisków poniżej, aby zagłosować lub zmienić swój głos)*"
+    )
+
+    found = False
+    for i, field in enumerate(embed.fields):
+        if "Głosowanie" in field.name or "Ankieta" in field.name or "Wyniki" in field.name:
+            embed.set_field_at(i, name="🗳️ Głosowanie / Wyniki", value=poll_text, inline=False)
+            found = True
+            break
+    if not found:
+        embed.add_field(name="🗳️ Głosowanie / Wyniki", value=poll_text, inline=False)
+    return embed
+
+
+async def handle_poll_vote(interaction: discord.Interaction, choice: str) -> None:
+    if not interaction.message:
+        await interaction.response.send_message("❌ Nie można zarejestrować głosu dla tej wiadomości.", ephemeral=True)
+        return
+
+    msg = interaction.message
+    user_id = interaction.user.id
+    changed, user_msg, yes_count, no_count = register_vote(msg.id, user_id, choice)
+
+    await interaction.response.send_message(user_msg, ephemeral=True)
+
+    if changed and msg.embeds:
+        try:
+            new_embed = update_poll_embed(msg.embeds[0].copy(), yes_count, no_count)
+            new_view = PollVoteView(yes_count, no_count)
+            await msg.edit(embed=new_embed, view=new_view)
+        except Exception as e:
+            logging.error("Błąd aktualizacji embedu ankiety: %s", e)
+
+
+class PollVoteView(discord.ui.View):
+    def __init__(self, yes_count: int = 0, no_count: int = 0) -> None:
+        super().__init__(timeout=None)
+        label_yes = f"TAK ({yes_count})" if yes_count > 0 else "TAK"
+        label_no = f"NIE ({no_count})" if no_count > 0 else "NIE"
+
+        self.yes_button = discord.ui.Button(
+            label=label_yes,
+            emoji="✅",
+            style=discord.ButtonStyle.success,
+            custom_id="pvp0:poll:yes",
+        )
+        self.yes_button.callback = self.on_vote_yes
+        self.add_item(self.yes_button)
+
+        self.no_button = discord.ui.Button(
+            label=label_no,
+            emoji="❌",
+            style=discord.ButtonStyle.danger,
+            custom_id="pvp0:poll:no",
+        )
+        self.no_button.callback = self.on_vote_no
+        self.add_item(self.no_button)
+
+    async def on_vote_yes(self, interaction: discord.Interaction) -> None:
+        await handle_poll_vote(interaction, "yes")
+
+    async def on_vote_no(self, interaction: discord.Interaction) -> None:
+        await handle_poll_vote(interaction, "no")
 
 
 def parse_meeting_datetime(data_str: str, time_str: str) -> datetime | None:
@@ -824,11 +984,12 @@ class Treasury(commands.Cog):
     # ── /ogloszenie wyslij ───────────────────────────────────────────
     @ogloszenie_group.command(
         name="wyslij",
-        description="Wysyła oficjalne ogłoszenie na kanał #ogłoszenia oraz na PV do każdego członka klanu.",
+        description="Wysyła oficjalne ogłoszenie lub ankietę na kanał #ogłoszenia oraz PV do członków.",
     )
     @app_commands.describe(
-        tytul="Tytuł ogłoszenia (np. Nowy sojusz, Ważna informacja)",
-        tresc="Treść ogłoszenia do przekazania",
+        tytul="Tytuł ogłoszenia lub ankiety (np. Nowy sojusz, Ważna informacja, Głosowanie)",
+        tresc="Treść ogłoszenia lub pytanie w ankiecie",
+        ankieta="Czy to ogłoszenie jest ankietą/pytaniem z przyciskami TAK / NIE? (Domyślnie: Nie)",
         ping="Czy oznaczyć rolę klanu na kanale ogłoszeń? (Domyślnie: Nie)",
         zdjecie_url="Opcjonalny link do obrazka/grafiki do embedu",
     )
@@ -837,6 +998,7 @@ class Treasury(commands.Cog):
         interaction: discord.Interaction,
         tytul: str,
         tresc: str,
+        ankieta: bool = False,
         ping: bool = False,
         zdjecie_url: str | None = None,
     ) -> None:
@@ -866,10 +1028,11 @@ class Treasury(commands.Cog):
         clan_role = _get_clan_role(interaction.guild)
         members = await get_clan_members(interaction.guild)
 
+        embed_title = f"🗳️ ANKIETA: {tytul}" if (ankieta and not tytul.lower().startswith(("ankieta", "🗳️"))) else f"📢 {tytul}"
         embed = discord.Embed(
-            title=f"📢 {tytul}",
+            title=embed_title,
             description=tresc,
-            color=config.COLOR_TICKET,
+            color=0x38BDF8 if ankieta else config.COLOR_TICKET,
             timestamp=datetime.now(timezone.utc),
         )
         if interaction.guild.icon:
@@ -883,6 +1046,11 @@ class Treasury(commands.Cog):
 
         embed.set_footer(text=f"{config.FOOTER_TEXT_ZBIORKA} • Ogłosił: {interaction.user.display_name}")
 
+        view = None
+        if ankieta:
+            embed = update_poll_embed(embed, 0, 0)
+            view = PollVoteView(0, 0)
+
         content_ping = None
         if ping:
             if clan_role:
@@ -891,7 +1059,7 @@ class Treasury(commands.Cog):
                 content_ping = "@everyone"
 
         try:
-            channel_msg = await channel.send(content=content_ping, embed=embed)
+            channel_msg = await channel.send(content=content_ping, embed=embed, view=view)
         except Exception as e:
             await interaction.followup.send(
                 f"❌ Wystąpił błąd podczas wysyłania ogłoszenia na kanał {channel.mention}: {e}",
@@ -899,18 +1067,28 @@ class Treasury(commands.Cog):
             )
             return
 
+        if ankieta:
+            record_poll(channel_msg.id)
+
         # Zapisz ogłoszenie w bazie danych
-        record_announcement(channel_msg.id, channel.id, interaction.guild.id, tytul, tresc, interaction.user.id)
+        record_announcement(channel_msg.id, channel.id, interaction.guild.id, tytul, tresc, interaction.user.id, is_poll=ankieta)
 
         sent_count = 0
         blocked_count = 0
 
         dm_embed = embed.copy()
-        dm_embed.add_field(
-            name="🔗 Wiadomość na serwerze",
-            value=f"[Kliknij tutaj, aby zobaczyć ogłoszenie na #{channel.name}]({channel_msg.jump_url})",
-            inline=False,
-        )
+        if ankieta:
+            dm_embed.add_field(
+                name="🗳️ Zagłosuj w ankiecie",
+                value=f"To ogłoszenie zawiera ankietę (TAK / NIE)!\n👉 **[Kliknij tutaj, aby oddać swój głos na kanale #{channel.name}]({channel_msg.jump_url})**",
+                inline=False,
+            )
+        else:
+            dm_embed.add_field(
+                name="🔗 Wiadomość na serwerze",
+                value=f"[Kliknij tutaj, aby zobaczyć ogłoszenie na #{channel.name}]({channel_msg.jump_url})",
+                inline=False,
+            )
 
         for member in members:
             if member.bot:
@@ -923,16 +1101,17 @@ class Treasury(commands.Cog):
             await asyncio.sleep(0.35)
 
         report_embed = discord.Embed(
-            title="📢 Ogłoszenie wysłane pomyślnie!",
+            title="🗳️ Ankieta wysłana pomyślnie!" if ankieta else "📢 Ogłoszenie wysłane pomyślnie!",
             description=(
-                f"Twoje ogłoszenie zostało opublikowane na kanale {channel.mention} "
+                f"Twoje {'pytanie z ankietą (TAK/NIE)' if ankieta else 'ogłoszenie'} zostało opublikowane na kanale {channel.mention} "
                 f"oraz rozesłane w wiadomościach prywatnych (PV) do członków klanu.\n\n"
-                f"🔗 **[Przejdź do ogłoszenia]({channel_msg.jump_url})**"
+                f"🔗 **[Przejdź do wpisu]({channel_msg.jump_url})**"
             ),
             color=config.COLOR_SUCCESS,
             timestamp=datetime.now(timezone.utc),
         )
         report_embed.add_field(name="📢 Kanał", value=channel.mention, inline=True)
+        report_embed.add_field(name="🗳️ Tryb", value="Ankieta (Przyciski: TAK / NIE)" if ankieta else "Zwykłe ogłoszenie", inline=True)
         report_embed.add_field(name="✅ Wysłano na PV", value=f"**{sent_count}**", inline=True)
         report_embed.add_field(name="🚫 Zablokowane DM", value=f"**{blocked_count}**", inline=True)
         report_embed.add_field(
@@ -1029,8 +1208,18 @@ class Treasury(commands.Cog):
 
         new_embed.set_footer(text=f"{config.FOOTER_TEXT_ZBIORKA} • Zaktualizował: {interaction.user.display_name}")
 
+        is_poll = is_poll_message(target_msg.id)
+        edit_view = None
+        if is_poll:
+            yes_votes, no_votes = get_poll_votes(target_msg.id)
+            new_embed = update_poll_embed(new_embed, len(yes_votes), len(no_votes))
+            edit_view = PollVoteView(len(yes_votes), len(no_votes))
+
         try:
-            await target_msg.edit(embed=new_embed)
+            if edit_view is not None:
+                await target_msg.edit(embed=new_embed, view=edit_view)
+            else:
+                await target_msg.edit(embed=new_embed)
         except Exception as e:
             await interaction.followup.send(f"❌ Błąd podczas edycji ogłoszenia: {e}", ephemeral=True)
             return
@@ -1045,7 +1234,7 @@ class Treasury(commands.Cog):
             dm_embed.title = f"🔄 ZAKTUALIZOWANO: {title}"
             dm_embed.add_field(
                 name="🔗 Wiadomość na serwerze",
-                value=f"[Kliknij tutaj, aby zobaczyć zaktualizowane ogłoszenie]({target_msg.jump_url})",
+                value=f"[Kliknij tutaj, aby zobaczyć zaktualizowaną treść]({target_msg.jump_url})",
                 inline=False,
             )
             for member in members:
@@ -1137,11 +1326,12 @@ class Treasury(commands.Cog):
     # ── Szybkie aliasy bezpośrednie (top-level) ──────────────────────
     @app_commands.command(
         name="ogloszenie_wyslij",
-        description="Szybkie wysłanie nowego ogłoszenia na kanał #ogłoszenia oraz PV.",
+        description="Szybkie wysłanie nowego ogłoszenia lub ankiety na kanał #ogłoszenia oraz PV.",
     )
     @app_commands.describe(
-        tytul="Tytuł ogłoszenia",
-        tresc="Treść ogłoszenia",
+        tytul="Tytuł ogłoszenia lub ankiety",
+        tresc="Treść ogłoszenia lub pytanie",
+        ankieta="Czy to ogłoszenie jest ankietą/pytaniem z przyciskami TAK / NIE? (Domyślnie: Nie)",
         ping="Czy oznaczyć rolę klanu na kanale ogłoszeń?",
         zdjecie_url="Opcjonalny link do obrazka",
     )
@@ -1151,10 +1341,11 @@ class Treasury(commands.Cog):
         interaction: discord.Interaction,
         tytul: str,
         tresc: str,
+        ankieta: bool = False,
         ping: bool = False,
         zdjecie_url: str | None = None,
     ) -> None:
-        await self.ogloszenie_wyslij(interaction, tytul, tresc, ping, zdjecie_url)
+        await self.ogloszenie_wyslij(interaction, tytul, tresc, ankieta, ping, zdjecie_url)
 
     @app_commands.command(
         name="ogloszenie_zmien",
@@ -1196,5 +1387,6 @@ class Treasury(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
+    bot.add_view(PollVoteView())
     await bot.add_cog(Treasury(bot))
 
