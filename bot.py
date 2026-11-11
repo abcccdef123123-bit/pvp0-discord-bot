@@ -41,6 +41,7 @@ class Pvp0Bot(commands.Bot):
         await self.load_extension("cogs.verification")
         await self.load_extension("cogs.tickets")
         await self.load_extension("cogs.treasury")
+        await self.load_extension("cogs.settings")
         guild = discord.Object(id=config.GUILD_ID)
         self.tree.copy_global_to(guild=guild)
         try:
