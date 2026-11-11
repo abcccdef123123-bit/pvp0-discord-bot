@@ -1530,8 +1530,6 @@ class Treasury(commands.Cog):
         else:
             embed.set_author(name=f"{guild.name} • Komunikat")
 
-        embed.add_field(name="👥 Adresaci", value=f"Posiadacze roli: {rola.mention}", inline=False)
-
         if zdjecie_url and zdjecie_url.strip().startswith(("http://", "https://")):
             embed.set_image(url=zdjecie_url.strip())
 
