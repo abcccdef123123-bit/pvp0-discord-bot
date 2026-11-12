@@ -1071,20 +1071,8 @@ class Treasury(commands.Cog):
         default_permissions=discord.Permissions(administrator=True),
     )
 
-    # ── /ogloszenie wyslij ───────────────────────────────────────────
-    @ogloszenie_group.command(
-        name="wyslij",
-        description="Wysyła oficjalne ogłoszenie lub ankietę na kanał #ogłoszenia (oraz opcjonalnie na PV).",
-    )
-    @app_commands.describe(
-        tytul="Tytuł ogłoszenia lub ankiety (np. Nowy sojusz, Ważna informacja, Głosowanie)",
-        tresc="Treść ogłoszenia lub pytanie w ankiecie",
-        ankieta="Czy to ogłoszenie jest ankietą/pytaniem z przyciskami TAK / NIE? (Domyślnie: Nie)",
-        wyslij_pv="Czy wysłać to ogłoszenie również w wiadomości prywatnej (PV) do członków klanu? (Domyślnie: Nie)",
-        ping="Czy oznaczyć rolę klanu na kanale ogłoszeń? (Domyślnie: Nie)",
-        zdjecie_url="Opcjonalny link do obrazka/grafiki do embedu",
-    )
-    async def ogloszenie_wyslij(
+    # ── Logika obsługi ogłoszeń (współdzielona z aliasami) ───────────
+    async def _do_ogloszenie_wyslij(
         self,
         interaction: discord.Interaction,
         tytul: str,
@@ -1221,19 +1209,33 @@ class Treasury(commands.Cog):
 
         await interaction.followup.send(embed=report_embed, ephemeral=True)
 
-    # ── /ogloszenie zmien ────────────────────────────────────────────
+    # ── /ogloszenie wyslij ───────────────────────────────────────────
     @ogloszenie_group.command(
-        name="zmien",
-        description="Edytuje treść lub tytuł istniejącego ogłoszenia na kanale #ogłoszenia.",
+        name="wyslij",
+        description="Wysyła oficjalne ogłoszenie lub ankietę na kanał #ogłoszenia (oraz opcjonalnie na PV).",
     )
     @app_commands.describe(
-        nowa_tresc="Nowa treść ogłoszenia",
-        nowy_tytul="Nowy tytuł ogłoszenia (opcjonalnie; jeśli puste, zachowuje dotychczasowy)",
-        wiadomosc_id="ID lub link wiadomości z ogłoszeniem (jeśli puste, edytuje ostatnie ogłoszenie)",
-        nowe_zdjecie_url="Nowy link do zdjęcia (wpisz 'brak' aby usunąć dotychczasowe zdjęcie)",
-        powiadom_pv="Czy wysłać zaktualizowaną treść na PV do członków klanu? (Domyślnie: Nie)",
+        tytul="Tytuł ogłoszenia lub ankiety (np. Nowy sojusz, Ważna informacja, Głosowanie)",
+        tresc="Treść ogłoszenia lub pytanie w ankiecie",
+        ankieta="Czy to ogłoszenie jest ankietą/pytaniem z przyciskami TAK / NIE? (Domyślnie: Nie)",
+        wyslij_pv="Czy wysłać to ogłoszenie również w wiadomości prywatnej (PV) do członków klanu? (Domyślnie: Nie)",
+        ping="Czy oznaczyć rolę klanu na kanale ogłoszeń? (Domyślnie: Nie)",
+        zdjecie_url="Opcjonalny link do obrazka/grafiki do embedu",
     )
-    async def ogloszenie_zmien(
+    async def ogloszenie_wyslij(
+        self,
+        interaction: discord.Interaction,
+        tytul: str,
+        tresc: str,
+        ankieta: bool = False,
+        wyslij_pv: bool = False,
+        ping: bool = False,
+        zdjecie_url: str | None = None,
+    ) -> None:
+        await self._do_ogloszenie_wyslij(interaction, tytul, tresc, ankieta, wyslij_pv, ping, zdjecie_url)
+
+    # ── Logika edycji ogłoszenia (współdzielona z aliasem) ───────────
+    async def _do_ogloszenie_zmien(
         self,
         interaction: discord.Interaction,
         nowa_tresc: str,
@@ -1361,15 +1363,31 @@ class Treasury(commands.Cog):
         report.set_footer(text=config.FOOTER_TEXT_ZBIORKA)
         await interaction.followup.send(embed=report, ephemeral=True)
 
-    # ── /ogloszenie usun ─────────────────────────────────────────────
+    # ── /ogloszenie zmien ────────────────────────────────────────────
     @ogloszenie_group.command(
-        name="usun",
-        description="Usuwa ogłoszenie z kanału #ogłoszenia.",
+        name="zmien",
+        description="Edytuje treść lub tytuł istniejącego ogłoszenia na kanale #ogłoszenia.",
     )
     @app_commands.describe(
-        wiadomosc_id="ID lub link wiadomości do usunięcia (jeśli puste, usuwa ostatnie ogłoszenie)",
+        nowa_tresc="Nowa treść ogłoszenia",
+        nowy_tytul="Nowy tytuł ogłoszenia (opcjonalnie; jeśli puste, zachowuje dotychczasowy)",
+        wiadomosc_id="ID lub link wiadomości z ogłoszeniem (jeśli puste, edytuje ostatnie ogłoszenie)",
+        nowe_zdjecie_url="Nowy link do zdjęcia (wpisz 'brak' aby usunąć dotychczasowe zdjęcie)",
+        powiadom_pv="Czy wysłać zaktualizowaną treść na PV do członków klanu? (Domyślnie: Nie)",
     )
-    async def ogloszenie_usun(
+    async def ogloszenie_zmien(
+        self,
+        interaction: discord.Interaction,
+        nowa_tresc: str,
+        nowy_tytul: str | None = None,
+        wiadomosc_id: str | None = None,
+        nowe_zdjecie_url: str | None = None,
+        powiadom_pv: bool = False,
+    ) -> None:
+        await self._do_ogloszenie_zmien(interaction, nowa_tresc, nowy_tytul, wiadomosc_id, nowe_zdjecie_url, powiadom_pv)
+
+    # ── Logika usuwania ogłoszenia (współdzielona z aliasem) ──────────
+    async def _do_ogloszenie_usun(
         self,
         interaction: discord.Interaction,
         wiadomosc_id: str | None = None,
@@ -1421,6 +1439,21 @@ class Treasury(commands.Cog):
         report.set_footer(text=config.FOOTER_TEXT_ZBIORKA)
         await interaction.followup.send(embed=report, ephemeral=True)
 
+    # ── /ogloszenie usun ─────────────────────────────────────────────
+    @ogloszenie_group.command(
+        name="usun",
+        description="Usuwa ogłoszenie z kanału #ogłoszenia.",
+    )
+    @app_commands.describe(
+        wiadomosc_id="ID lub link wiadomości do usunięcia (jeśli puste, usuwa ostatnie ogłoszenie)",
+    )
+    async def ogloszenie_usun(
+        self,
+        interaction: discord.Interaction,
+        wiadomosc_id: str | None = None,
+    ) -> None:
+        await self._do_ogloszenie_usun(interaction, wiadomosc_id)
+
     # ── Szybkie aliasy bezpośrednie (top-level) ──────────────────────
     @app_commands.command(
         name="ogloszenie_wyslij",
@@ -1445,7 +1478,7 @@ class Treasury(commands.Cog):
         ping: bool = False,
         zdjecie_url: str | None = None,
     ) -> None:
-        await self.ogloszenie_wyslij(interaction, tytul, tresc, ankieta, wyslij_pv, ping, zdjecie_url)
+        await self._do_ogloszenie_wyslij(interaction, tytul, tresc, ankieta, wyslij_pv, ping, zdjecie_url)
 
     @app_commands.command(
         name="ogloszenie_zmien",
@@ -1468,7 +1501,7 @@ class Treasury(commands.Cog):
         nowe_zdjecie_url: str | None = None,
         powiadom_pv: bool = False,
     ) -> None:
-        await self.ogloszenie_zmien(interaction, nowa_tresc, nowy_tytul, wiadomosc_id, nowe_zdjecie_url, powiadom_pv)
+        await self._do_ogloszenie_zmien(interaction, nowa_tresc, nowy_tytul, wiadomosc_id, nowe_zdjecie_url, powiadom_pv)
 
     @app_commands.command(
         name="ogloszenie_usun",
@@ -1483,21 +1516,10 @@ class Treasury(commands.Cog):
         interaction: discord.Interaction,
         wiadomosc_id: str | None = None,
     ) -> None:
-        await self.ogloszenie_usun(interaction, wiadomosc_id)
+        await self._do_ogloszenie_usun(interaction, wiadomosc_id)
 
-    # ── /komunikat (oraz alias /pw_rola) ─────────────────────────────
-    @app_commands.command(
-        name="komunikat",
-        description="Wysyła prywatną wiadomość (PV) do każdego użytkownika z wybraną rolą.",
-    )
-    @app_commands.describe(
-        rola="Wskaż rolę, której członkom chcesz wysłać wiadomość na PV",
-        tytul="Tytuł komunikatu",
-        tresc="Treść wiadomości do przekazania",
-        zdjecie_url="Opcjonalny link do obrazka/grafiki do wiadomości",
-    )
-    @app_commands.default_permissions(administrator=True)
-    async def komunikat(
+    # ── Logika /komunikat (współdzielona z aliasem /pw_rola) ─────────
+    async def _do_komunikat(
         self,
         interaction: discord.Interaction,
         rola: discord.Role,
@@ -1570,6 +1592,28 @@ class Treasury(commands.Cog):
 
         await interaction.followup.send(embed=report, ephemeral=True)
 
+    # ── /komunikat (oraz alias /pw_rola) ─────────────────────────────
+    @app_commands.command(
+        name="komunikat",
+        description="Wysyła prywatną wiadomość (PV) do każdego użytkownika z wybraną rolą.",
+    )
+    @app_commands.describe(
+        rola="Wskaż rolę, której członkom chcesz wysłać wiadomość na PV",
+        tytul="Tytuł komunikatu",
+        tresc="Treść wiadomości do przekazania",
+        zdjecie_url="Opcjonalny link do obrazka/grafiki do wiadomości",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def komunikat(
+        self,
+        interaction: discord.Interaction,
+        rola: discord.Role,
+        tytul: str,
+        tresc: str,
+        zdjecie_url: str | None = None,
+    ) -> None:
+        await self._do_komunikat(interaction, rola, tytul, tresc, zdjecie_url)
+
     @komunikat.error
     async def komunikat_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         if isinstance(error, app_commands.errors.MissingPermissions):
@@ -1598,7 +1642,7 @@ class Treasury(commands.Cog):
         tresc: str,
         zdjecie_url: str | None = None,
     ) -> None:
-        await self.komunikat(interaction, rola, tytul, tresc, zdjecie_url)
+        await self._do_komunikat(interaction, rola, tytul, tresc, zdjecie_url)
 
 
 

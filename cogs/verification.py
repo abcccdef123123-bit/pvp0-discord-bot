@@ -90,13 +90,7 @@ class Verification(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @app_commands.command(
-        name="panel-weryfikacja",
-        description="Wyślij panel weryfikacji PVP0 na ten kanał.",
-    )
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    async def panel_weryfikacja(self, interaction: discord.Interaction) -> None:
+    async def _do_panel_weryfikacja(self, interaction: discord.Interaction) -> None:
         if not (isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.administrator):
             await interaction.response.send_message(
                 "❌ Ta komenda jest dostępna tylko dla Administratorów.",
@@ -109,6 +103,15 @@ class Verification(commands.Cog):
             view=VerificationView(),
             file=file,
         )
+
+    @app_commands.command(
+        name="panel-weryfikacja",
+        description="Wyślij panel weryfikacji PVP0 na ten kanał.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def panel_weryfikacja(self, interaction: discord.Interaction) -> None:
+        await self._do_panel_weryfikacja(interaction)
 
     @panel_weryfikacja.error
     async def panel_weryfikacja_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
@@ -125,7 +128,7 @@ class Verification(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def panel_weryfikacja_alias(self, interaction: discord.Interaction) -> None:
-        await self.panel_weryfikacja(interaction)
+        await self._do_panel_weryfikacja(interaction)
 
     @panel_weryfikacja_alias.error
     async def panel_weryfikacja_alias_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:

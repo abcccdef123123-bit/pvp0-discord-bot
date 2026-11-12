@@ -33,27 +33,8 @@ class Settings(commands.Cog):
         default_permissions=discord.Permissions(administrator=True),
     )
 
-    # ── /ustaw rola ──────────────────────────────────────────────────
-    @ustaw_group.command(
-        name="rola",
-        description="Przypisz rolę Discorda do wybranej funkcji w bocie (np. Zarząd, Lider, Członek).",
-    )
-    @app_commands.describe(
-        typ="Wybierz funkcję roli, którą chcesz skonfigurować",
-        rola="Wskaż rolę na serwerze",
-    )
-    @app_commands.choices(
-        typ=[
-            app_commands.Choice(name="🛡️ Zarząd / Administracja", value="zarzad"),
-            app_commands.Choice(name="👑 Lider", value="lider"),
-            app_commands.Choice(name="⚔️ Zastępca", value="zastepca"),
-            app_commands.Choice(name="🛡️ Członek klanu PVP0", value="czlonek"),
-            app_commands.Choice(name="🤝 Rola Sojusz", value="sojusz"),
-            app_commands.Choice(name="🏰 Lider Sojuszu", value="lider_sojuszu"),
-            app_commands.Choice(name="✅ Rola Weryfikacji", value="weryfikacja"),
-        ]
-    )
-    async def ustaw_rola(
+    # ── Logika ustawień (współdzielona z aliasami) ───────────────────
+    async def _do_ustaw_rola(
         self,
         interaction: discord.Interaction,
         typ: app_commands.Choice[str],
@@ -84,23 +65,7 @@ class Settings(commands.Cog):
         embed.set_footer(text=config.FOOTER_TEXT)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    # ── /ustaw kanal ─────────────────────────────────────────────────
-    @ustaw_group.command(
-        name="kanal",
-        description="Przypisz kanał lub kategorię Discorda do wybranej funkcji (np. Kategoria Ticketów, Logi).",
-    )
-    @app_commands.describe(
-        typ="Wybierz funkcję kanału, którą chcesz skonfigurować",
-        kanal="Wskaż kanał tekstowy lub kategorię na serwerze",
-    )
-    @app_commands.choices(
-        typ=[
-            app_commands.Choice(name="📁 Kategoria Ticketów", value="kategoria_ticketow"),
-            app_commands.Choice(name="📜 Kanał Logów Głównych (#logi)", value="logi"),
-            app_commands.Choice(name="📢 Kanał Ogłoszeń (#ogłoszenia)", value="ogloszenia"),
-        ]
-    )
-    async def ustaw_kanal(
+    async def _do_ustaw_kanal(
         self,
         interaction: discord.Interaction,
         typ: app_commands.Choice[str],
@@ -137,6 +102,58 @@ class Settings(commands.Cog):
         )
         embed.set_footer(text=config.FOOTER_TEXT)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ── /ustaw rola ──────────────────────────────────────────────────
+    @ustaw_group.command(
+        name="rola",
+        description="Przypisz rolę Discorda do wybranej funkcji w bocie (np. Zarząd, Lider, Członek).",
+    )
+    @app_commands.describe(
+        typ="Wybierz funkcję roli, którą chcesz skonfigurować",
+        rola="Wskaż rolę na serwerze",
+    )
+    @app_commands.choices(
+        typ=[
+            app_commands.Choice(name="🛡️ Zarząd / Administracja", value="zarzad"),
+            app_commands.Choice(name="👑 Lider", value="lider"),
+            app_commands.Choice(name="⚔️ Zastępca", value="zastepca"),
+            app_commands.Choice(name="🛡️ Członek klanu PVP0", value="czlonek"),
+            app_commands.Choice(name="🤝 Rola Sojusz", value="sojusz"),
+            app_commands.Choice(name="🏰 Lider Sojuszu", value="lider_sojuszu"),
+            app_commands.Choice(name="✅ Rola Weryfikacji", value="weryfikacja"),
+        ]
+    )
+    async def ustaw_rola(
+        self,
+        interaction: discord.Interaction,
+        typ: app_commands.Choice[str],
+        rola: discord.Role,
+    ) -> None:
+        await self._do_ustaw_rola(interaction, typ, rola)
+
+    # ── /ustaw kanal ─────────────────────────────────────────────────
+    @ustaw_group.command(
+        name="kanal",
+        description="Przypisz kanał lub kategorię Discorda do wybranej funkcji (np. Kategoria Ticketów, Logi).",
+    )
+    @app_commands.describe(
+        typ="Wybierz funkcję kanału, którą chcesz skonfigurować",
+        kanal="Wskaż kanał tekstowy lub kategorię na serwerze",
+    )
+    @app_commands.choices(
+        typ=[
+            app_commands.Choice(name="📁 Kategoria Ticketów", value="kategoria_ticketow"),
+            app_commands.Choice(name="📜 Kanał Logów Głównych (#logi)", value="logi"),
+            app_commands.Choice(name="📢 Kanał Ogłoszeń (#ogłoszenia)", value="ogloszenia"),
+        ]
+    )
+    async def ustaw_kanal(
+        self,
+        interaction: discord.Interaction,
+        typ: app_commands.Choice[str],
+        kanal: discord.abc.GuildChannel,
+    ) -> None:
+        await self._do_ustaw_kanal(interaction, typ, kanal)
 
     # ── /ustaw pokaz / /ustawienia ───────────────────────────────────
     @ustaw_group.command(
@@ -181,7 +198,7 @@ class Settings(commands.Cog):
         typ: app_commands.Choice[str],
         rola: discord.Role,
     ) -> None:
-        await self.ustaw_rola(interaction, typ, rola)
+        await self._do_ustaw_rola(interaction, typ, rola)
 
     @app_commands.command(
         name="ustaw_kanal",
@@ -205,7 +222,7 @@ class Settings(commands.Cog):
         typ: app_commands.Choice[str],
         kanal: discord.abc.GuildChannel,
     ) -> None:
-        await self.ustaw_kanal(interaction, typ, kanal)
+        await self._do_ustaw_kanal(interaction, typ, kanal)
 
     async def _send_settings_embed(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
