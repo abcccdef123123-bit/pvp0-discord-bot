@@ -464,68 +464,66 @@ async def _find_target_announcement(
     return None, f"⚠️ Nie znaleziono żadnego ogłoszenia do edycji/usunięcia na kanale {channel.mention}. Podaj ID wiadomości w parametrze."
 
 
+def _clean_field_text(text: str | None, prefixes: tuple[str, ...]) -> str:
+    """Usuwa zbędne etykiety na początku tekstu (np. 'tytul:', 'tytuł:', 'tresc:', 'treść:')."""
+    if not text:
+        return ""
+    cleaned = text.strip()
+    for prefix in prefixes:
+        pattern = rf"^(?:{re.escape(prefix)})\s*[:\-–—]?\s*"
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+    return cleaned
+
+
 async def get_clan_members(guild: discord.Guild) -> list[discord.Member]:
     """Wyszukuje i zwraca listę wszystkich członków z rolą klanowicza (bez botów)."""
     clan_role = _get_clan_role(guild)
     if not clan_role:
         return []
 
-    found: dict[int, discord.Member] = {}
+    # 1. Sprawdź members z roli w pamięci podręcznej
+    found: dict[int, discord.Member] = {m.id: m for m in clan_role.members if not m.bot}
 
-    # 1. Sprawdź cache bota
-    for m in clan_role.members:
-        if not m.bot:
-            found[m.id] = m
-            add_known_clan_id(m.id)
+    # 2. Jeśli cache nie ma wszystkich, wykonaj szybki chunk
+    if len(guild.members) < guild.member_count:
+        try:
+            await guild.chunk()
+            for m in clan_role.members:
+                if not m.bot:
+                    found[m.id] = m
+        except Exception:
+            pass
 
-    # 2. Sprawdź znane ID z bazy danych
+    # 3. Jeśli nadal pusto, spróbuj fetch_members
+    if not found:
+        try:
+            async for m in guild.fetch_members(limit=None):
+                if not m.bot and clan_role in m.roles:
+                    found[m.id] = m
+        except Exception:
+            pass
+
+    # 4. Sprawdź znane ID z bazy danych
     known_ids = load_known_clan_ids()
     for uid in known_ids:
         if uid not in found:
             m = guild.get_member(uid)
-            if m is None:
-                try:
-                    m = await guild.fetch_member(uid)
-                except (discord.NotFound, discord.HTTPException):
-                    m = None
             if m and not m.bot and clan_role in m.roles:
                 found[m.id] = m
 
-    # 3. Jeśli lista jest mała, przeskanuj historię kanałów tekstowych
-    if len(found) < 30:
-        for ch in guild.text_channels:
-            if not ch.permissions_for(guild.me).read_message_history:
-                continue
-            try:
-                async for msg in ch.history(limit=40):
-                    if msg.author.bot or msg.author.id in found:
-                        continue
-                    m = guild.get_member(msg.author.id)
-                    if m is None:
-                        try:
-                            m = await guild.fetch_member(msg.author.id)
-                        except (discord.NotFound, discord.HTTPException):
-                            continue
-                    if m and not m.bot and clan_role in m.roles:
-                        found[m.id] = m
-                        add_known_clan_id(m.id)
-            except Exception:
-                continue
+    for m in found.values():
+        add_known_clan_id(m.id)
 
     return list(found.values())
 
 
 async def get_role_members(guild: discord.Guild, role: discord.Role) -> list[discord.Member]:
     """Wyszukuje i zwraca wszystkich członków serwera posiadających daną rolę."""
-    found: dict[int, discord.Member] = {}
-
     # 1. Sprawdź members z roli w pamięci podręcznej
-    for m in role.members:
-        if not m.bot:
-            found[m.id] = m
+    found: dict[int, discord.Member] = {m.id: m for m in role.members if not m.bot}
 
     # 2. Jeśli serwer ma więcej członków niż w pamięci podręcznej, spróbuj chunk
-    if len(found) < guild.member_count:
+    if len(guild.members) < guild.member_count:
         try:
             await guild.chunk()
             for m in role.members:
@@ -534,43 +532,20 @@ async def get_role_members(guild: discord.Guild, role: discord.Role) -> list[dis
         except Exception:
             pass
 
-    # 3. Sprawdź fetch_members
-    try:
-        async for m in guild.fetch_members(limit=None):
-            if not m.bot and role in m.roles:
-                found[m.id] = m
-    except Exception:
-        pass
-
-    # 4. Jeśli nadal mało członków (np. brak Server Members Intent na bramie), przeszukaj historię kanałów tekstowych
-    for ch in guild.text_channels:
-        if not ch.permissions_for(guild.me).read_message_history:
-            continue
+    # 3. Sprawdź fetch_members jeśli cache nie zwrócił nikogo
+    if not found:
         try:
-            async for msg in ch.history(limit=50):
-                if msg.author.bot or msg.author.id in found:
-                    continue
-                m = guild.get_member(msg.author.id)
-                if m is None:
-                    try:
-                        m = await guild.fetch_member(msg.author.id)
-                    except Exception:
-                        continue
-                if m and not m.bot and role in m.roles:
+            async for m in guild.fetch_members(limit=None):
+                if not m.bot and role in m.roles:
                     found[m.id] = m
         except Exception:
-            continue
+            pass
 
-    # 5. Sprawdź bazę znanych klanowiczów
+    # 4. Sprawdź bazę znanych klanowiczów
     known_ids = load_known_clan_ids()
     for uid in known_ids:
         if uid not in found:
             m = guild.get_member(uid)
-            if m is None:
-                try:
-                    m = await guild.fetch_member(uid)
-                except Exception:
-                    m = None
             if m and not m.bot and role in m.roles:
                 found[m.id] = m
 
@@ -1108,10 +1083,13 @@ class Treasury(commands.Cog):
         clan_role = _get_clan_role(interaction.guild)
         members = await get_clan_members(interaction.guild) if wyslij_pv else []
 
-        embed_title = f"🗳️ ANKIETA: {tytul}" if (ankieta and not tytul.lower().startswith(("ankieta", "🗳️"))) else f"📢 {tytul}"
+        clean_title = _clean_field_text(tytul, ("tytul", "tytuł", "title"))
+        clean_desc = _clean_field_text(tresc, ("tresc", "treść", "opis", "wiadomosc", "wiadomość", "content"))
+
+        embed_title = f"🗳️ ANKIETA: {clean_title}" if (ankieta and not clean_title.lower().startswith(("ankieta", "🗳️"))) else f"📢 {clean_title}"
         embed = discord.Embed(
             title=embed_title,
-            description=tresc,
+            description=clean_desc,
             color=0x38BDF8 if ankieta else config.COLOR_TICKET,
             timestamp=datetime.now(timezone.utc),
         )
@@ -1523,8 +1501,8 @@ class Treasury(commands.Cog):
         self,
         interaction: discord.Interaction,
         rola: discord.Role,
-        tytul: str,
         tresc: str,
+        tytul: str | None = None,
         zdjecie_url: str | None = None,
     ) -> None:
         if not interaction.guild:
@@ -1538,6 +1516,7 @@ class Treasury(commands.Cog):
             )
             return
 
+        # 1. Błyskawiczny defer, aby Discord nie rzucił błędu 3s
         await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild
@@ -1550,12 +1529,25 @@ class Treasury(commands.Cog):
             )
             return
 
+        # Oczyszczenie tekstu z ewentualnie wpisanych przedrostków "tytul:", "tresc:"
+        clean_title = _clean_field_text(tytul, ("tytul", "tytuł", "title")) if tytul else ""
+        clean_desc = _clean_field_text(tresc, ("tresc", "treść", "opis", "wiadomosc", "wiadomość", "content"))
+
+        # 2. Natychmiastowa odpowiedź dla Discorda (likwiduje wiszące "myśli..." i timeout)
+        await interaction.followup.send(
+            f"⏳ **Wysyłanie komunikatu do {len(members)} członków roli {rola.mention}...**\n"
+            "Podsumowanie pojawi się w tej wiadomości po doręczeniu.",
+            ephemeral=True,
+        )
+
         embed = discord.Embed(
-            title=f"📨 {tytul}",
-            description=tresc,
+            description=clean_desc,
             color=0x5865F2,
             timestamp=datetime.now(timezone.utc),
         )
+        if clean_title:
+            embed.title = f"📨 {clean_title}" if not clean_title.startswith(("📨", "📢", "✉️")) else clean_title
+
         if guild.icon:
             embed.set_author(name=f"{guild.name} • Komunikat", icon_url=guild.icon.url)
             embed.set_thumbnail(url=guild.icon.url)
@@ -1576,7 +1568,7 @@ class Treasury(commands.Cog):
                 sent_count += 1
             except (discord.Forbidden, discord.HTTPException):
                 blocked_count += 1
-            await asyncio.sleep(0.35)
+            await asyncio.sleep(0.3)
 
         report = discord.Embed(
             title="📨 Komunikat został wysłany!",
@@ -1590,7 +1582,13 @@ class Treasury(commands.Cog):
         report.add_field(name="👥 Łącznie członków roli", value=f"**{len(members)}**", inline=False)
         report.set_footer(text=config.FOOTER_TEXT_ZBIORKA)
 
-        await interaction.followup.send(embed=report, ephemeral=True)
+        try:
+            await interaction.edit_original_response(content=None, embed=report)
+        except Exception:
+            try:
+                await interaction.followup.send(embed=report, ephemeral=True)
+            except Exception:
+                pass
 
     # ── /komunikat (oraz alias /pw_rola) ─────────────────────────────
     @app_commands.command(
@@ -1599,8 +1597,8 @@ class Treasury(commands.Cog):
     )
     @app_commands.describe(
         rola="Wskaż rolę, której członkom chcesz wysłać wiadomość na PV",
-        tytul="Tytuł komunikatu",
         tresc="Treść wiadomości do przekazania",
+        tytul="Tytuł komunikatu (opcjonalnie)",
         zdjecie_url="Opcjonalny link do obrazka/grafiki do wiadomości",
     )
     @app_commands.default_permissions(administrator=True)
@@ -1608,11 +1606,11 @@ class Treasury(commands.Cog):
         self,
         interaction: discord.Interaction,
         rola: discord.Role,
-        tytul: str,
         tresc: str,
+        tytul: str | None = None,
         zdjecie_url: str | None = None,
     ) -> None:
-        await self._do_komunikat(interaction, rola, tytul, tresc, zdjecie_url)
+        await self._do_komunikat(interaction, rola, tresc, tytul, zdjecie_url)
 
     @komunikat.error
     async def komunikat_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
@@ -1629,8 +1627,8 @@ class Treasury(commands.Cog):
     )
     @app_commands.describe(
         rola="Wskaż rolę docelową",
-        tytul="Tytuł komunikatu",
         tresc="Treść wiadomości",
+        tytul="Tytuł komunikatu (opcjonalnie)",
         zdjecie_url="Opcjonalny link do obrazka",
     )
     @app_commands.default_permissions(administrator=True)
@@ -1638,11 +1636,15 @@ class Treasury(commands.Cog):
         self,
         interaction: discord.Interaction,
         rola: discord.Role,
-        tytul: str,
         tresc: str,
+        tytul: str | None = None,
         zdjecie_url: str | None = None,
     ) -> None:
-        await self._do_komunikat(interaction, rola, tytul, tresc, zdjecie_url)
+        await self._do_komunikat(interaction, rola, tresc, tytul, zdjecie_url)
+
+    @pw_rola_alias.error
+    async def pw_rola_alias_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        await self.komunikat_error(interaction, error)
 
 
 
