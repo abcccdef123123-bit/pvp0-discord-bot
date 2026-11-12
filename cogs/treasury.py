@@ -1074,12 +1074,13 @@ class Treasury(commands.Cog):
     # ── /ogloszenie wyslij ───────────────────────────────────────────
     @ogloszenie_group.command(
         name="wyslij",
-        description="Wysyła oficjalne ogłoszenie lub ankietę na kanał #ogłoszenia oraz PV do członków.",
+        description="Wysyła oficjalne ogłoszenie lub ankietę na kanał #ogłoszenia (oraz opcjonalnie na PV).",
     )
     @app_commands.describe(
         tytul="Tytuł ogłoszenia lub ankiety (np. Nowy sojusz, Ważna informacja, Głosowanie)",
         tresc="Treść ogłoszenia lub pytanie w ankiecie",
         ankieta="Czy to ogłoszenie jest ankietą/pytaniem z przyciskami TAK / NIE? (Domyślnie: Nie)",
+        wyslij_pv="Czy wysłać to ogłoszenie również w wiadomości prywatnej (PV) do członków klanu? (Domyślnie: Nie)",
         ping="Czy oznaczyć rolę klanu na kanale ogłoszeń? (Domyślnie: Nie)",
         zdjecie_url="Opcjonalny link do obrazka/grafiki do embedu",
     )
@@ -1089,6 +1090,7 @@ class Treasury(commands.Cog):
         tytul: str,
         tresc: str,
         ankieta: bool = False,
+        wyslij_pv: bool = False,
         ping: bool = False,
         zdjecie_url: str | None = None,
     ) -> None:
@@ -1116,7 +1118,7 @@ class Treasury(commands.Cog):
             return
 
         clan_role = _get_clan_role(interaction.guild)
-        members = await get_clan_members(interaction.guild)
+        members = await get_clan_members(interaction.guild) if wyslij_pv else []
 
         embed_title = f"🗳️ ANKIETA: {tytul}" if (ankieta and not tytul.lower().startswith(("ankieta", "🗳️"))) else f"📢 {tytul}"
         embed = discord.Embed(
@@ -1166,35 +1168,36 @@ class Treasury(commands.Cog):
         sent_count = 0
         blocked_count = 0
 
-        dm_embed = embed.copy()
-        if ankieta:
-            dm_embed.add_field(
-                name="🗳️ Zagłosuj w ankiecie",
-                value=f"To ogłoszenie zawiera ankietę (TAK / NIE)!\n👉 **[Kliknij tutaj, aby oddać swój głos na kanale #{channel.name}]({channel_msg.jump_url})**",
-                inline=False,
-            )
-        else:
-            dm_embed.add_field(
-                name="🔗 Wiadomość na serwerze",
-                value=f"[Kliknij tutaj, aby zobaczyć ogłoszenie na #{channel.name}]({channel_msg.jump_url})",
-                inline=False,
-            )
+        if wyslij_pv and members:
+            dm_embed = embed.copy()
+            if ankieta:
+                dm_embed.add_field(
+                    name="🗳️ Zagłosuj w ankiecie",
+                    value=f"To ogłoszenie zawiera ankietę (TAK / NIE)!\n👉 **[Kliknij tutaj, aby oddać swój głos na kanale #{channel.name}]({channel_msg.jump_url})**",
+                    inline=False,
+                )
+            else:
+                dm_embed.add_field(
+                    name="🔗 Wiadomość na serwerze",
+                    value=f"[Kliknij tutaj, aby zobaczyć ogłoszenie na #{channel.name}]({channel_msg.jump_url})",
+                    inline=False,
+                )
 
-        for member in members:
-            if member.bot:
-                continue
-            try:
-                await member.send(embed=dm_embed)
-                sent_count += 1
-            except (discord.Forbidden, discord.HTTPException):
-                blocked_count += 1
-            await asyncio.sleep(0.35)
+            for member in members:
+                if member.bot:
+                    continue
+                try:
+                    await member.send(embed=dm_embed)
+                    sent_count += 1
+                except (discord.Forbidden, discord.HTTPException):
+                    blocked_count += 1
+                await asyncio.sleep(0.35)
 
+        pv_desc = " oraz rozesłane w wiadomościach prywatnych (PV) do członków klanu." if wyslij_pv else "."
         report_embed = discord.Embed(
             title="🗳️ Ankieta wysłana pomyślnie!" if ankieta else "📢 Ogłoszenie wysłane pomyślnie!",
             description=(
-                f"Twoje {'pytanie z ankietą (TAK/NIE)' if ankieta else 'ogłoszenie'} zostało opublikowane na kanale {channel.mention} "
-                f"oraz rozesłane w wiadomościach prywatnych (PV) do członków klanu.\n\n"
+                f"Twoje {'pytanie z ankietą (TAK/NIE)' if ankieta else 'ogłoszenie'} zostało opublikowane na kanale {channel.mention}{pv_desc}\n\n"
                 f"🔗 **[Przejdź do wpisu]({channel_msg.jump_url})**"
             ),
             color=config.COLOR_SUCCESS,
@@ -1202,13 +1205,18 @@ class Treasury(commands.Cog):
         )
         report_embed.add_field(name="📢 Kanał", value=channel.mention, inline=True)
         report_embed.add_field(name="🗳️ Tryb", value="Ankieta (Przyciski: TAK / NIE)" if ankieta else "Zwykłe ogłoszenie", inline=True)
-        report_embed.add_field(name="✅ Wysłano na PV", value=f"**{sent_count}**", inline=True)
-        report_embed.add_field(name="🚫 Zablokowane DM", value=f"**{blocked_count}**", inline=True)
-        report_embed.add_field(
-            name="👥 Łącznie klanowiczów",
-            value=f"**{len(members)}** (z rolą {clan_role.mention if clan_role else 'Brak'})",
-            inline=False,
-        )
+        if wyslij_pv:
+            report_embed.add_field(name="📨 Wysyłka PV", value="Włączona", inline=True)
+            report_embed.add_field(name="✅ Wysłano na PV", value=f"**{sent_count}**", inline=True)
+            report_embed.add_field(name="🚫 Zablokowane DM", value=f"**{blocked_count}**", inline=True)
+            report_embed.add_field(
+                name="👥 Łącznie klanowiczów",
+                value=f"**{len(members)}** (z rolą {clan_role.mention if clan_role else 'Brak'})",
+                inline=False,
+            )
+        else:
+            report_embed.add_field(name="📨 Wysyłka PV", value="Wyłączona (tylko kanał)", inline=True)
+
         report_embed.set_footer(text=config.FOOTER_TEXT_ZBIORKA)
 
         await interaction.followup.send(embed=report_embed, ephemeral=True)
@@ -1416,12 +1424,13 @@ class Treasury(commands.Cog):
     # ── Szybkie aliasy bezpośrednie (top-level) ──────────────────────
     @app_commands.command(
         name="ogloszenie_wyslij",
-        description="Szybkie wysłanie nowego ogłoszenia lub ankiety na kanał #ogłoszenia oraz PV.",
+        description="Szybkie wysłanie nowego ogłoszenia lub ankiety na kanał #ogłoszenia (z opcją PV).",
     )
     @app_commands.describe(
         tytul="Tytuł ogłoszenia lub ankiety",
         tresc="Treść ogłoszenia lub pytanie",
         ankieta="Czy to ogłoszenie jest ankietą/pytaniem z przyciskami TAK / NIE? (Domyślnie: Nie)",
+        wyslij_pv="Czy wysłać to ogłoszenie również w wiadomości prywatnej (PV) do członków klanu? (Domyślnie: Nie)",
         ping="Czy oznaczyć rolę klanu na kanale ogłoszeń?",
         zdjecie_url="Opcjonalny link do obrazka",
     )
@@ -1432,10 +1441,11 @@ class Treasury(commands.Cog):
         tytul: str,
         tresc: str,
         ankieta: bool = False,
+        wyslij_pv: bool = False,
         ping: bool = False,
         zdjecie_url: str | None = None,
     ) -> None:
-        await self.ogloszenie_wyslij(interaction, tytul, tresc, ankieta, ping, zdjecie_url)
+        await self.ogloszenie_wyslij(interaction, tytul, tresc, ankieta, wyslij_pv, ping, zdjecie_url)
 
     @app_commands.command(
         name="ogloszenie_zmien",
